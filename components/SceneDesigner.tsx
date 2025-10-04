@@ -1,3 +1,19 @@
+/**
+ * This is the SceneDesigner component.
+ * This is the main component that handles all the operations of the appliation itself.
+ * Part of this code was written by ChatGPT, these portions are marked with "WRITTEN BY CHATGPT".
+ * 
+ * The way that this component works is as follows: 
+ * 1. It creates a scene, camera, and renderer.
+ * 2. It adds a grid to the scene.
+ * 3. The user can add their own model to the scene.
+ * 4. The user adds the route for tha astronaut to take.
+ * 5. The program will evaluate the route and give a score.
+
+ */
+
+
+
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -107,6 +123,44 @@ export default function SceneDesigner() {
     //create the scene
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
+
+    // Create starfield background
+    const starGeometry = new THREE.BufferGeometry();
+    const starCount = 2000;
+    const starPositions = new Float32Array(starCount * 3);
+    const starColors = new Float32Array(starCount * 3);
+    
+    for (let i = 0; i < starCount; i++) {
+      const i3 = i * 3;
+      // Distribute stars in a large sphere around the scene
+      const radius = 100 + Math.random() * 400;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      
+      starPositions[i3] = radius * Math.sin(phi) * Math.cos(theta);
+      starPositions[i3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+      starPositions[i3 + 2] = radius * Math.cos(phi);
+      
+      // Vary star brightness
+      const brightness = 0.5 + Math.random() * 0.5;
+      starColors[i3] = brightness;
+      starColors[i3 + 1] = brightness;
+      starColors[i3 + 2] = brightness;
+    }
+    
+    starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    starGeometry.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
+    
+    const starMaterial = new THREE.PointsMaterial({
+      size: 0.5,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.8,
+      sizeAttenuation: true
+    });
+    
+    const stars = new THREE.Points(starGeometry, starMaterial);
+    scene.add(stars);
 
     //create the camera, this position will be changed later for route tracing
     const camera = new THREE.PerspectiveCamera(
