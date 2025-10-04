@@ -141,6 +141,7 @@ export default function SceneDesigner() {
     const starPositions = new Float32Array(starCount * 3);
     const starColors = new Float32Array(starCount * 3);
     
+    //Add the stars to the scene (purely for aesthetic purposes)
     for (let i = 0; i < starCount; i++) {
       const i3 = i * 3;
       // Distribute stars in a large sphere around the scene
@@ -254,6 +255,8 @@ export default function SceneDesigner() {
         }
       }
       mesh.instanceMatrix.needsUpdate = true;
+
+      mesh.updateMatrixWorld(true);
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       basePositionsRef.current = positions;
       gridYRef.current = null; // No longer needed
@@ -337,7 +340,11 @@ export default function SceneDesigner() {
       // Check for hits on the main instanced mesh
       const hits = raycaster.intersectObject(mesh, false);
       let clickedPointId: number | null = null;
-      
+
+      if (hits.length > 0) {
+        // Raycast hit detected
+      }
+
       if (clickedReplacementId !== null) {
         clickedPointId = clickedReplacementId;
       } else if (hits.length && typeof hits[0].instanceId === "number") {
@@ -355,26 +362,13 @@ export default function SceneDesigner() {
           replacementData.mesh.geometry.dispose();
           (replacementData.mesh.material as THREE.Material).dispose();
           replacedPointsRef.current.delete(prevRedId);
-          
-          // Restore the original point in the instanced mesh
-          const positions = basePositionsRef.current;
-          if (positions && positions[prevRedId]) {
-            const m = new THREE.Matrix4();
-            const q = new THREE.Quaternion();
-            const s = new THREE.Vector3(1, 1, 1);
-            const prevBasePos = positions[prevRedId];
-            const prevPos = new THREE.Vector3(prevBasePos.x, planeIndexRef.current, prevBasePos.z);
-            m.compose(prevPos, q, s);
-            mesh.setMatrixAt(prevRedId, m);
-            mesh.instanceMatrix.needsUpdate = true;
-          }
         }
       }
 
-      // Make the clicked point red
+      // Make the clicked point red at the current plane using base XZ
       const basePos = basePositionsRef.current?.[clickedPointId];
       if (!basePos) return;
-      
+      // Since mesh is now positioned at planeIndex Y, replacement should be at base XZ
       const replacementGeom = new THREE.SphereGeometry(0.08, 12, 12);
       const replacementMat = new THREE.MeshStandardMaterial({ color: clickedColor });
       const replacementMesh = new THREE.Mesh(replacementGeom, replacementMat);
@@ -382,13 +376,12 @@ export default function SceneDesigner() {
       replacementMesh.updateMatrixWorld(true);
       worldGroup.add(replacementMesh);
       replacedPointsRef.current.set(clickedPointId, {mesh: replacementMesh, plane: planeIndexRef.current});
-      
-      // Hide the original point in the instanced mesh
+
+      // Hide the original point in the instanced mesh by scaling it to 0
       const m = new THREE.Matrix4();
       const q = new THREE.Quaternion();
       const hideScale = new THREE.Vector3(0, 0, 0);
-      const pos = new THREE.Vector3(basePos.x, planeIndexRef.current, basePos.z);
-      m.compose(pos, q, hideScale);
+      m.compose(basePos, q, hideScale);
       mesh.setMatrixAt(clickedPointId, m);
       mesh.instanceMatrix.needsUpdate = true;
       
@@ -524,7 +517,7 @@ export default function SceneDesigner() {
     worldGroup.add(mesh);
   }, [gridDensity, defaultColor]);
 
-  // Apply scale to dots and adjust grid density
+  // Handle scale changes and grid density calculation
   useEffect(() => {
     const s = Math.max(0.5, Math.min(1, scale));
 
@@ -533,39 +526,57 @@ export default function SceneDesigner() {
     // When scale is larger (1), we want fewer points (21)
     const newDensity = Math.round(21 + (1 - s) * 20);
     const clampedDensity = Math.max(21, Math.min(41, newDensity));
-    
+
     if (clampedDensity !== gridDensity) {
       setGridDensity(clampedDensity);
     }
+  }, [scale, gridDensity]);
 
+  // Handle scale and hide/show replaced points in instance matrices
+  useEffect(() => {
     const mesh = pointsMeshRef.current;
-    const positions = basePositionsRef.current;
-    if (!mesh || !positions) return;
-    
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const scaleVec = new THREE.Vector3(s, s, s);
+    if (!mesh) return;
 
-    // Move all points to the Y position corresponding to planeIndex
-    for (let i = 0; i < positions.length; i++) {
-      const basePos = positions[i]; // Base 2D position (X, 0, Z)
+    const s = Math.max(0.5, Math.min(1, scale));
+
+    // Apply scale (uniformly adjust sphere size)
+    const sphereScale = new THREE.Vector3(s, s, s);
+    const totalInstances = mesh.count;
+    const tmpM = new THREE.Matrix4();
+    const tmpQ = new THREE.Quaternion();
+
+    // Keep points at base XZ positions
+    const positions = basePositionsRef.current;
+    if (!positions) return;
+
+    for (let i = 0; i < totalInstances; i++) {
+      const p = positions[i];
       const isReplaced = replacedPointsRef.current.has(i);
-      
-      // Create new position with Y set to planeIndex
-      const newPos = new THREE.Vector3(basePos.x, planeIndex, basePos.z);
-      
-      if (isReplaced) {
-        // Hide replaced points
-        const hideScale = new THREE.Vector3(0, 0, 0);
-        m.compose(newPos, q, hideScale);
-      } else {
-        // Show normal points with scale
-        m.compose(newPos, q, scaleVec);
-      }
-      
-      mesh.setMatrixAt(i, m);
+      const scaleVec = isReplaced
+        ? new THREE.Vector3(0, 0, 0)
+        : sphereScale;
+      tmpM.compose(p, tmpQ, scaleVec);
+      mesh.setMatrixAt(i, tmpM);
     }
+
     mesh.instanceMatrix.needsUpdate = true;
+    mesh.updateMatrixWorld(true);
+  }, [scale, replacementChangeTrigger]);
+
+  // Handle vertical plane positioning
+  useEffect(() => {
+    const mesh = pointsMeshRef.current;
+    if (!mesh) return;
+
+    // Move the entire grid vertically
+    mesh.position.y = planeIndex;
+    mesh.updateMatrixWorld(true);
+  }, [planeIndex]);
+
+  // Handle replacement points positioning
+  useEffect(() => {
+    const positions = basePositionsRef.current;
+    if (!positions) return;
 
     // Move replacement points to match current plane Y position
     replacedPointsRef.current.forEach((replacementData, pointId) => {
@@ -578,7 +589,7 @@ export default function SceneDesigner() {
         replacementData.mesh.updateMatrixWorld(true);
       }
     });
-  }, [scale, planeIndex, gridDensity, replacementChangeTrigger]);
+  }, [planeIndex, replacementChangeTrigger]);
 
   // Apply model transformations and clipping
   useEffect(() => {
