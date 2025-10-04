@@ -13,6 +13,8 @@
  */
 
 
+// Note: Handle point highlighting better later
+
 
 "use client";
 
@@ -70,7 +72,10 @@ export default function SceneDesigner() {
   const [importedModel, setImportedModel] = useState<THREE.Group | null>(null);
 
   //the density of the grid
-  const [gridDensity, setGridDensity] = useState<number>(11);
+  const [gridDensity, setGridDensity] = useState<number>(21); // Moderate default density
+
+  //tracks when points are replaced/restored to trigger re-renders
+  const [replacementChangeTrigger, setReplacementChangeTrigger] = useState<number>(0);
 
   //is the model plane open
   const [showModelPanel, setShowModelPanel] = useState<boolean>(false);
@@ -84,17 +89,20 @@ export default function SceneDesigner() {
   //what is the position of the model
   const [modelPosition, setModelPosition] = useState<{x: number, y: number, z: number}>({x: 0, y: 0, z: 0});
 
+  //clipping plane height for slicing the model vertically
+  const [clippingHeight, setClippingHeight] = useState<number>(10); // Default to show full model
+
   //memoized colors
   const defaultColor = useMemo(
-    () => new THREE.Color(0xffffff),
+    () => new THREE.Color(0xffffff), // White default points
     [colorBlindMode]
   );
   const hoverColor = useMemo(
-    () => new THREE.Color(0xcccccc),
+    () => new THREE.Color(0xffffff), // White on hover (brighter effect can be added)
     [colorBlindMode]
   );
-  const selectedColor = useMemo(
-    () => new THREE.Color(0xffffff),
+  const clickedColor = useMemo(
+    () => new THREE.Color(0xff3333), // Red when clicked/toggled
     [colorBlindMode]
   );
 
@@ -111,6 +119,9 @@ export default function SceneDesigner() {
   const importedModelRef = useRef<THREE.Group | null>(null);
   const planeIndexRef = useRef<number>(planeIndex);
   const routeTypeRef = useRef<RouteType>(routeType);
+  const replacedPointsRef = useRef<Map<number, {mesh: THREE.Mesh, plane: number}>>(new Map());
+  const currentRedPointRef = useRef<number | null>(null); // Track the currently red point
+  const previousPointRef = useRef<number | null>(null); // Track the previous point for line drawing
 
 
   //UseEffect for the scene
@@ -175,6 +186,7 @@ export default function SceneDesigner() {
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.localClippingEnabled = true; // Enable clipping planes
     container.appendChild(renderer.domElement);
 
     //add the orbit controls to the camera, this is to allo the user to orbit the scene
@@ -208,48 +220,43 @@ export default function SceneDesigner() {
       }
 
       const GRID = density;
-      const total = GRID * GRID * GRID;
-      const geom = new THREE.SphereGeometry(0.06, 12, 12);
+      const total = GRID * GRID; // Only 2D grid now (X and Y)
+      const geom = new THREE.SphereGeometry(0.08, 12, 12);
       const mat = new THREE.MeshStandardMaterial({ color: defaultColor });
       const mesh = new THREE.InstancedMesh(geom, mat, total);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      mesh.name = 'gridPoints'; // Add name for identification
+
+      mesh.name = 'gridPoints';
       pointsMeshRef.current = mesh;
 
       const tmpM = new THREE.Matrix4();
       const tmpQ = new THREE.Quaternion();
       const tmpS = new THREE.Vector3(1, 1, 1);
-      const positions: THREE.Vector3[] = [];
-      const gridY = new Int16Array(total);
+      const positions: THREE.Vector3[] = []; // Base 2D positions (X, Y only)
 
       const start = MIN_PLANE;
       const span = MAX_PLANE - MIN_PLANE;
       const step = GRID > 1 ? span / (GRID - 1) : 0;
 
+      // Generate 2D grid (only X and Z)
       let k = 0;
       for (let ix = 0; ix < GRID; ix++) {
         const xv = start + ix * step;
-        for (let iy = 0; iy < GRID; iy++) {
-          const yv = start + iy * step;
-          for (let iz = 0; iz < GRID; iz++) {
-            const zv = start + iz * step;
-            const p = new THREE.Vector3(xv, yv, zv);
-            positions.push(p);
-            // Use index-based plane assignment instead of rounding coordinate
-            // Map iy index to MIN_PLANE..MAX_PLANE range
-            const planeValue = Math.round(MIN_PLANE + (iy * (MAX_PLANE - MIN_PLANE)) / (GRID - 1));
-            gridY[k] = planeValue;
-            tmpM.compose(p, tmpQ, tmpS);
-            mesh.setMatrixAt(k, tmpM);
-            mesh.setColorAt(k, defaultColor);
-            k++;
-          }
+        for (let iz = 0; iz < GRID; iz++) {
+          const zv = start + iz * step;
+          // All points start at Y = 0, will be moved by planeIndex
+          const p = new THREE.Vector3(xv, 0, zv);
+          positions.push(p);
+          tmpM.compose(p, tmpQ, tmpS);
+          mesh.setMatrixAt(k, tmpM);
+          mesh.setColorAt(k, defaultColor);
+          k++;
         }
       }
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       basePositionsRef.current = positions;
-      gridYRef.current = gridY;
+      gridYRef.current = null; // No longer needed
       worldGroup.add(mesh);
       
       return mesh;
@@ -260,7 +267,6 @@ export default function SceneDesigner() {
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
     let hovered: number | null = null;
-    let selectedA: number | null = null;
 
     function setColor(id: number, color: THREE.Color) {
       mesh.setColorAt(id, color);
@@ -277,59 +283,132 @@ export default function SceneDesigner() {
       return p;
     }
 
+    //function to handle the movement of the pointer
     function onMove(e: PointerEvent) {
       const rect = renderer.domElement.getBoundingClientRect();
       ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(ndc, camera);
       const hits = raycaster.intersectObject(mesh, false);
+
+      const lastHovered = hovered;
+      let currentHoveredId: number | null = null;
+
       if (hits.length && typeof hits[0].instanceId === "number") {
         const id = hits[0].instanceId;
-        if (gridYRef.current && gridYRef.current[id] !== planeIndexRef.current) {
-          if (hovered !== null && hovered !== selectedA) setColor(hovered, defaultColor);
-          hovered = null;
-          return;
-        }
-        if (hovered !== id) {
-          if (hovered !== null && hovered !== selectedA) setColor(hovered, defaultColor);
-          hovered = id;
-          if (hovered !== selectedA) setColor(hovered, hoverColor);
-        }
-      } else {
-        if (hovered !== null && hovered !== selectedA) setColor(hovered, defaultColor);
-        hovered = null;
+        // All points are on the same plane now, so no need to check plane
+        currentHoveredId = id;
       }
+
+      // Reset previous hover color (but don't override replaced points)
+      if (lastHovered !== null && lastHovered !== currentHoveredId) {
+        if (!replacedPointsRef.current.has(lastHovered)) {
+          setColor(lastHovered, defaultColor);
+        }
+      }
+
+      // Set new hover color (but don't override replaced points)
+      if (currentHoveredId !== null && currentHoveredId !== lastHovered) {
+        if (!replacedPointsRef.current.has(currentHoveredId)) {
+          setColor(currentHoveredId, hoverColor);
+        }
+      }
+
+      hovered = currentHoveredId;
     }
 
     function onDown(e: PointerEvent) {
       const rect = renderer.domElement.getBoundingClientRect();
       ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
       raycaster.setFromCamera(ndc, camera);
-      const hits = raycaster.intersectObject(mesh, false);
-      if (!hits.length || typeof hits[0].instanceId !== "number") return;
-      const id = hits[0].instanceId;
-      if (gridYRef.current && gridYRef.current[id] !== planeIndexRef.current) return;
-      if (selectedA === null) {
-        selectedA = id;
-        setColor(id, selectedColor);
-        selectedARef.current = id;
-        return;
+
+      // First check for hits on replacement points (red points)
+      let clickedReplacementId: number | null = null;
+      for (const [originalId, replacementData] of replacedPointsRef.current) {
+        const replacementHits = raycaster.intersectObject(replacementData.mesh, false);
+        if (replacementHits.length > 0) {
+          clickedReplacementId = originalId;
+          break;
+        }
       }
-      if (id === selectedA) return;
-      const a = getPos(selectedA);
-      const b = getPos(id);
-      const lineGeom = new THREE.BufferGeometry().setFromPoints([a, b]);
-      const colorByType = routeTypeRef.current === "handrail" ? 0xffffff : routeTypeRef.current === "tethered" ? 0xcccccc : 0x888888;
-      const lineMat = new THREE.LineBasicMaterial({ color: colorByType });
-      const line = new THREE.Line(lineGeom, lineMat);
-      worldGroup.add(line);
-      createdLinesRef.current.push(line);
-      setLinesCount(createdLinesRef.current.length);
-      // Reset
-      setColor(selectedA, defaultColor);
-      selectedA = null;
-      selectedARef.current = null;
+
+      // Check for hits on the main instanced mesh
+      const hits = raycaster.intersectObject(mesh, false);
+      let clickedPointId: number | null = null;
+      
+      if (clickedReplacementId !== null) {
+        clickedPointId = clickedReplacementId;
+      } else if (hits.length && typeof hits[0].instanceId === "number") {
+        clickedPointId = hits[0].instanceId;
+      }
+
+      if (clickedPointId === null) return;
+
+      // If there's a currently red point, restore it to original color
+      if (currentRedPointRef.current !== null && currentRedPointRef.current !== clickedPointId) {
+        const prevRedId = currentRedPointRef.current;
+        if (replacedPointsRef.current.has(prevRedId)) {
+          const replacementData = replacedPointsRef.current.get(prevRedId)!;
+          worldGroup.remove(replacementData.mesh);
+          replacementData.mesh.geometry.dispose();
+          (replacementData.mesh.material as THREE.Material).dispose();
+          replacedPointsRef.current.delete(prevRedId);
+          
+          // Restore the original point in the instanced mesh
+          const positions = basePositionsRef.current;
+          if (positions && positions[prevRedId]) {
+            const m = new THREE.Matrix4();
+            const q = new THREE.Quaternion();
+            const s = new THREE.Vector3(1, 1, 1);
+            const prevBasePos = positions[prevRedId];
+            const prevPos = new THREE.Vector3(prevBasePos.x, planeIndexRef.current, prevBasePos.z);
+            m.compose(prevPos, q, s);
+            mesh.setMatrixAt(prevRedId, m);
+            mesh.instanceMatrix.needsUpdate = true;
+          }
+        }
+      }
+
+      // Make the clicked point red
+      const basePos = basePositionsRef.current?.[clickedPointId];
+      if (!basePos) return;
+      
+      const replacementGeom = new THREE.SphereGeometry(0.08, 12, 12);
+      const replacementMat = new THREE.MeshStandardMaterial({ color: clickedColor });
+      const replacementMesh = new THREE.Mesh(replacementGeom, replacementMat);
+      replacementMesh.position.set(basePos.x, planeIndexRef.current, basePos.z);
+      replacementMesh.updateMatrixWorld(true);
+      worldGroup.add(replacementMesh);
+      replacedPointsRef.current.set(clickedPointId, {mesh: replacementMesh, plane: planeIndexRef.current});
+      
+      // Hide the original point in the instanced mesh
+      const m = new THREE.Matrix4();
+      const q = new THREE.Quaternion();
+      const hideScale = new THREE.Vector3(0, 0, 0);
+      const pos = new THREE.Vector3(basePos.x, planeIndexRef.current, basePos.z);
+      m.compose(pos, q, hideScale);
+      mesh.setMatrixAt(clickedPointId, m);
+      mesh.instanceMatrix.needsUpdate = true;
+      
+      setReplacementChangeTrigger(prev => prev + 1);
+
+      // Draw line if this is the second point
+      if (previousPointRef.current !== null && previousPointRef.current !== clickedPointId) {
+        const a = getPos(previousPointRef.current);
+        const b = getPos(clickedPointId);
+        const lineGeom = new THREE.BufferGeometry().setFromPoints([a, b]);
+        const lineMat = new THREE.LineBasicMaterial({ color: clickedColor });
+        const line = new THREE.Line(lineGeom, lineMat);
+        worldGroup.add(line);
+        createdLinesRef.current.push(line);
+        setLinesCount(createdLinesRef.current.length);
+      }
+
+      // Update references
+      previousPointRef.current = clickedPointId;
+      currentRedPointRef.current = clickedPointId;
     }
 
     function onResize() {
@@ -359,6 +438,11 @@ export default function SceneDesigner() {
         l.geometry.dispose();
         (l.material as THREE.Material).dispose();
       });
+      // Clean up replacement points
+      replacedPointsRef.current.forEach((replacementData) => {
+        replacementData.mesh.geometry.dispose();
+        (replacementData.mesh.material as THREE.Material).dispose();
+      });
       // Clean up imported model
       if (importedModel) {
         worldGroupRef.current?.remove(importedModel);
@@ -376,7 +460,7 @@ export default function SceneDesigner() {
       if (renderer.domElement.parentElement === container) container.removeChild(renderer.domElement);
       renderer.dispose();
     };
-  }, [defaultColor, hoverColor, selectedColor]);
+  }, [defaultColor, hoverColor, clickedColor]);
 
   useEffect(() => { planeIndexRef.current = planeIndex; }, [planeIndex]);
   useEffect(() => { routeTypeRef.current = routeType; }, [routeType]);
@@ -394,8 +478,8 @@ export default function SceneDesigner() {
     }
 
     const GRID = gridDensity;
-    const total = GRID * GRID * GRID;
-    const geom = new THREE.SphereGeometry(0.06, 12, 12);
+    const total = GRID * GRID; // Only 2D grid now (X and Y)
+    const geom = new THREE.SphereGeometry(0.08, 12, 12);
     const mat = new THREE.MeshStandardMaterial({ color: defaultColor });
     const mesh = new THREE.InstancedMesh(geom, mat, total);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -406,36 +490,37 @@ export default function SceneDesigner() {
     const tmpQ = new THREE.Quaternion();
     const tmpS = new THREE.Vector3(1, 1, 1);
     const positions: THREE.Vector3[] = [];
-    const gridY = new Int16Array(total);
 
     const start = MIN_PLANE;
     const span = MAX_PLANE - MIN_PLANE;
     const step = GRID > 1 ? span / (GRID - 1) : 0;
 
     let k = 0;
+    // Generate 2D grid (only X and Z)
     for (let ix = 0; ix < GRID; ix++) {
       const xv = start + ix * step;
-      for (let iy = 0; iy < GRID; iy++) {
-        const yv = start + iy * step;
-        for (let iz = 0; iz < GRID; iz++) {
-          const zv = start + iz * step;
-          const p = new THREE.Vector3(xv, yv, zv);
-          positions.push(p);
-          // Use index-based plane assignment instead of rounding coordinate
-          // Map iy index to MIN_PLANE..MAX_PLANE range
-          const planeValue = Math.round(MIN_PLANE + (iy * (MAX_PLANE - MIN_PLANE)) / (GRID - 1));
-          gridY[k] = planeValue;
-          tmpM.compose(p, tmpQ, tmpS);
-          mesh.setMatrixAt(k, tmpM);
-          mesh.setColorAt(k, defaultColor);
-          k++;
-        }
+      for (let iz = 0; iz < GRID; iz++) {
+        const zv = start + iz * step;
+        // All points start at Y = 0, will be moved by planeIndex
+        const p = new THREE.Vector3(xv, 0, zv);
+        positions.push(p);
+        tmpM.compose(p, tmpQ, tmpS);
+        mesh.setMatrixAt(k, tmpM);
+        mesh.setColorAt(k, defaultColor);
+        k++;
       }
     }
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     basePositionsRef.current = positions;
-    gridYRef.current = gridY;
+    gridYRef.current = null;
+    // Clear any existing replacement points when regenerating grid
+    replacedPointsRef.current.forEach((replacementData) => {
+      worldGroup.remove(replacementData.mesh);
+      replacementData.mesh.geometry.dispose();
+      (replacementData.mesh.material as THREE.Material).dispose();
+    });
+    replacedPointsRef.current.clear();
     worldGroup.add(mesh);
   }, [gridDensity, defaultColor]);
 
@@ -444,10 +529,10 @@ export default function SceneDesigner() {
     const s = Math.max(0.5, Math.min(1, scale));
 
     // Calculate grid density based on scale (inverse relationship)
-    // When scale is smaller (0.5), we want more points (21)
-    // When scale is larger (1), we want fewer points (11)
-    const newDensity = Math.round(11 + (1 - s) * 10);
-    const clampedDensity = Math.max(11, Math.min(31, newDensity));
+    // When scale is smaller (0.5), we want more points (31)
+    // When scale is larger (1), we want fewer points (21)
+    const newDensity = Math.round(21 + (1 - s) * 20);
+    const clampedDensity = Math.max(21, Math.min(41, newDensity));
     
     if (clampedDensity !== gridDensity) {
       setGridDensity(clampedDensity);
@@ -455,23 +540,47 @@ export default function SceneDesigner() {
 
     const mesh = pointsMeshRef.current;
     const positions = basePositionsRef.current;
-    const yIndex = gridYRef.current;
-    if (!mesh || !positions || !yIndex) return;
+    if (!mesh || !positions) return;
     
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
-    const sVis = new THREE.Vector3(s, s, s);
-    const sHid = new THREE.Vector3(HIDDEN_SCALE, HIDDEN_SCALE, HIDDEN_SCALE);
-    
+    const scaleVec = new THREE.Vector3(s, s, s);
+
+    // Move all points to the Y position corresponding to planeIndex
     for (let i = 0; i < positions.length; i++) {
-      const pos = positions[i];
-      m.compose(pos, q, yIndex[i] === planeIndex ? sVis : sHid);
+      const basePos = positions[i]; // Base 2D position (X, 0, Z)
+      const isReplaced = replacedPointsRef.current.has(i);
+      
+      // Create new position with Y set to planeIndex
+      const newPos = new THREE.Vector3(basePos.x, planeIndex, basePos.z);
+      
+      if (isReplaced) {
+        // Hide replaced points
+        const hideScale = new THREE.Vector3(0, 0, 0);
+        m.compose(newPos, q, hideScale);
+      } else {
+        // Show normal points with scale
+        m.compose(newPos, q, scaleVec);
+      }
+      
       mesh.setMatrixAt(i, m);
     }
     mesh.instanceMatrix.needsUpdate = true;
-  }, [scale, planeIndex, gridDensity]);
 
-  // Apply model transformations
+    // Move replacement points to match current plane Y position
+    replacedPointsRef.current.forEach((replacementData, pointId) => {
+      if (positions[pointId]) {
+        const basePos = positions[pointId];
+        replacementData.mesh.position.set(basePos.x, planeIndex, basePos.z);
+        // Update the plane value stored in the data
+        replacementData.plane = planeIndex;
+        // Force matrix update for raycasting to work correctly
+        replacementData.mesh.updateMatrixWorld(true);
+      }
+    });
+  }, [scale, planeIndex, gridDensity, replacementChangeTrigger]);
+
+  // Apply model transformations and clipping
   useEffect(() => {
     const model = importedModelRef.current;
     if (!model) return;
@@ -493,7 +602,26 @@ export default function SceneDesigner() {
       modelPosition.y,
       modelPosition.z
     );
-  }, [modelScale, modelRotation, modelPosition]);
+
+    // Apply clipping plane
+    const clippingPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), clippingHeight);
+    
+    model.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach((mat) => {
+            mat.clippingPlanes = [clippingPlane];
+            mat.clipShadows = true;
+            mat.needsUpdate = true;
+          });
+        } else {
+          child.material.clippingPlanes = [clippingPlane];
+          child.material.clipShadows = true;
+          child.material.needsUpdate = true;
+        }
+      }
+    });
+  }, [modelScale, modelRotation, modelPosition, clippingHeight]);
 
   // Local save/load and evaluation (simplified)
   function saveCurrentPlanePoints() {
@@ -622,6 +750,7 @@ export default function SceneDesigner() {
           setModelScale(1);
           setModelRotation({x: 0, y: 0, z: 0});
           setModelPosition({x: 0, y: 0, z: 0});
+          setClippingHeight(10); // Default to show full model
 
           // Clean up blob URL
           URL.revokeObjectURL(fileURL);
@@ -913,12 +1042,31 @@ export default function SceneDesigner() {
             <span style={{ width: 36, textAlign: "right" }}>{modelPosition.z.toFixed(1)}</span>
           </label>
 
+          {/* Clipping Plane Control */}
+          <div style={{ fontSize: 12, opacity: 0.85, marginTop: 8 }}>Slice Height</div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ width: 60 }}>Clip</span>
+            <input
+              type="range"
+              min={-10}
+              max={10}
+              step={0.1}
+              value={clippingHeight}
+              onChange={(e) => setClippingHeight(parseFloat(e.target.value))}
+            />
+            <span style={{ width: 36, textAlign: "right" }}>{clippingHeight.toFixed(1)}</span>
+          </label>
+          <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>
+            Hides model above this height
+          </div>
+
           {/* Reset Button */}
           <button 
             onClick={() => {
               setModelScale(1);
               setModelRotation({x: 0, y: 0, z: 0});
               setModelPosition({x: 0, y: 0, z: 0});
+              setClippingHeight(10);
             }}
             style={{ marginTop: 8 }}
           >
