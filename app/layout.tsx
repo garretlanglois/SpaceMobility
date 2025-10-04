@@ -1,6 +1,6 @@
 export const metadata = {
-  title: "3D Grid - Space Mobility",
-  description: "Interactive 3D grid of points with line drawing"
+  title: "SpaceMobility – Space Station Route Designer",
+  description: "Interactive 3D designer for astronaut movement and station layout"
 };
 
 import "@/styles/globals.css";

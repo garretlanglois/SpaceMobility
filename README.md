@@ -1,41 +1,24 @@
-# SpaceMobility – 3D Grid Demo
+# SpaceMobility – Space Station Route Designer
 
-Interactive 3D grid of points built with Next.js, TypeScript, and Three.js.
+Interactive 3D designer built with Next.js, TypeScript and Three.js to design and evaluate astronaut movement routes and station layouts.
 
 ## Features
 
-- Orbit with mouse drag, zoom with wheel
-- 11×11×11 grid of points (instanced spheres)
-- Click two points to draw a line between them
-- UI to scale the scene and clear drawn lines
+- 3D grid with single-slice view (Y-plane)
+- Click-to-draw routes between points; route types: handrail, free drift, tethered
+- Save/load current plane points locally; simple rule-based evaluation
+- Unit definition from any two points (last drawn segment)
+- Import GLTF planned (hook points ready)
+- Color-blind mode toggle
 
 ## Getting Started
 
-Prereqs: Node.js 18+ and pnpm or npm.
-
-Install dependencies:
-
 ```bash
 npm install
-# or
-pnpm install
-```
-
-Run the dev server:
-
-```bash
 npm run dev
+# open http://localhost:3000
 ```
 
-Open `http://localhost:3000` in your browser.
+Open the Designer at `/designer`.
 
-## Project Structure
 
-- `app/page.tsx`: Renders the `ThreeGrid` component
-- `components/ThreeGrid.tsx`: Three.js scene setup, controls, raycasting, line drawing, scaling
-- `styles/globals.css`: Global styles
-
-## Notes
-
-- Grid uses an `InstancedMesh` for performance
-- Scaling applies to the `worldGroup` for true 3D scaling
