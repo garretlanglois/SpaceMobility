@@ -12,30 +12,63 @@ type SavedPoint = {
   position: { x: number; y: number; z: number };
 };
 
-const HIDDEN_SCALE = 0.001; // scale for hiding non-selected plane instances
+// Hide the non-selected plane instances
+const HIDDEN_SCALE = 0.001; 
 const MIN_PLANE = -5;
 const MAX_PLANE = 5;
 
 export default function SceneDesigner() {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
+
+  //React state variable implemmentations
   const [scale, setScale] = useState<number>(1);
-  const [planeIndex, setPlaneIndex] = useState<number>(-5); // Y-slice
+
+  //where the plane is
+  const [planeIndex, setPlaneIndex] = useState<number>(-5);
+  //number of lines
   const [linesCount, setLinesCount] = useState<number>(0);
+
+  //what type of route the astronaut will take
   const [routeType, setRouteType] = useState<RouteType>("handrail");
+  
+  //is color blind mode on
   const [colorBlindMode, setColorBlindMode] = useState<boolean>(false);
+
+  //set the disstance between the two points to derive the unit
   const [unitDistance, setUnitDistance] = useState<number | null>(null);
+
+  //saved points for the route
   const [savedPoints, setSavedPoints] = useState<SavedPoint[]>([]);
+
+  //show the scene panel
   const [showScenePanel, setShowScenePanel] = useState<boolean>(true);
+
+  //show the plane panel
   const [showPlanePanel, setShowPlanePanel] = useState<boolean>(true);
+
+  //is the model loading
   const [isLoadingModel, setIsLoadingModel] = useState<boolean>(false);
+
+  //the imported model
   const [importedModel, setImportedModel] = useState<THREE.Group | null>(null);
-  const [gridDensity, setGridDensity] = useState<number>(11); // Grid size changes with scale
+
+  //the density of the grid
+  const [gridDensity, setGridDensity] = useState<number>(11);
+
+  //is the model plane open
   const [showModelPanel, setShowModelPanel] = useState<boolean>(false);
+
+  //what is the scale of the model
   const [modelScale, setModelScale] = useState<number>(1);
+
+  //what is the rotation of the model
   const [modelRotation, setModelRotation] = useState<{x: number, y: number, z: number}>({x: 0, y: 0, z: 0});
+
+  //what is the position of the model
   const [modelPosition, setModelPosition] = useState<{x: number, y: number, z: number}>({x: 0, y: 0, z: 0});
 
+  //memoized colors
   const defaultColor = useMemo(
     () => new THREE.Color(0xffffff),
     [colorBlindMode]
@@ -49,6 +82,8 @@ export default function SceneDesigner() {
     [colorBlindMode]
   );
 
+  //WRITTEN BY CHATGPT: This is the code that handles the 3D scene and the interactions with the scene.
+
   const worldGroupRef = useRef<THREE.Group | null>(null);
   const pointsMeshRef = useRef<THREE.InstancedMesh | null>(null);
   const basePositionsRef = useRef<THREE.Vector3[] | null>(null);
@@ -61,13 +96,19 @@ export default function SceneDesigner() {
   const planeIndexRef = useRef<number>(planeIndex);
   const routeTypeRef = useRef<RouteType>(routeType);
 
+
+  //UseEffect for the scene
   useEffect(() => {
+
+    //if the container is not found, return
     if (!containerRef.current) return;
     const container = containerRef.current;
 
+    //create the scene
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
+    //create the camera, this position will be changed later for route tracing
     const camera = new THREE.PerspectiveCamera(
       60,
       container.clientWidth / container.clientHeight,
@@ -76,11 +117,13 @@ export default function SceneDesigner() {
     );
     camera.position.set(8, 8, 8);
 
+    //create the renderer using WebGL (faster than canvas)
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
 
+    //add the orbit controls to the camera, this is to allo the user to orbit the scene
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
