@@ -1,11 +1,7 @@
 {
   "compilerOptions": {
     "target": "es2022",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "es2022"
-    ],
+    "lib": ["dom", "dom.iterable", "es2022"],
     "allowJs": false,
     "skipLibCheck": true,
     "strict": true,
@@ -19,17 +15,11 @@
     "forceConsistentCasingInFileNames": true,
     "incremental": true,
     "paths": {
-      "@/components/*": [
-        "./components/*"
-      ],
-      "@/styles/*": [
-        "./styles/*"
-      ]
+      "@/components/*": ["./components/*"],
+      "@/styles/*": ["./styles/*"]
     },
     "plugins": [
-      {
-        "name": "next"
-      }
+      { "name": "next" }
     ]
   },
   "include": [
@@ -38,7 +28,6 @@
     "**/*.tsx",
     ".next/types/**/*.ts"
   ],
-  "exclude": [
-    "node_modules"
-  ]
+  "exclude": ["node_modules"]
 }
+
