@@ -70,8 +70,6 @@ export default function SceneDesigner() {
 
 
   //React state variable implemmentations
-  const [scale, setScale] = useState<number>(1);
-
   //where the plane is
   const [planeIndex, setPlaneIndex] = useState<number>(-5);
   //number of lines
@@ -102,7 +100,7 @@ export default function SceneDesigner() {
   const [importedModel, setImportedModel] = useState<THREE.Group | null>(null);
 
   //the density of the grid
-  const [gridDensity, setGridDensity] = useState<number>(21); // Moderate default density
+  const [gridDensity, setGridDensity] = useState<number>(31); // Higher density for smaller points
 
   //tracks when points are replaced/restored to trigger re-renders
   const [replacementChangeTrigger, setReplacementChangeTrigger] = useState<number>(0);
@@ -314,6 +312,8 @@ export default function SceneDesigner() {
     const raycaster = new THREE.Raycaster();
     // @ts-ignore improve line raycast threshold
     raycaster.params.Line = { ...raycaster.params.Line, threshold: 0.1 };
+    // @ts-ignore improve point raycast threshold for smaller spheres
+    raycaster.params.Points = { ...raycaster.params.Points, threshold: 0.2 };
     const ndc = new THREE.Vector2();
     let hovered: number | null = null;
 
@@ -440,13 +440,13 @@ export default function SceneDesigner() {
       }
 
       // Make the clicked point red at the current plane using base XZ
-      const basePos = basePositionsRef.current?.[clickedPointId];
-      if (!basePos) return;
-      // Since mesh is now positioned at planeIndex Y, replacement should be at base XZ
+      // Use getPos to get the actual position from the instance matrix
+      const instancePos = getPos(clickedPointId);
       const replacementGeom = new THREE.SphereGeometry(0.08, 12, 12);
       const replacementMat = new THREE.MeshStandardMaterial({ color: clickedColor });
       const replacementMesh = new THREE.Mesh(replacementGeom, replacementMat);
-      replacementMesh.position.set(basePos.x, planeIndexRef.current, basePos.z);
+      // The instance position is in local space, add mesh's Y position for world space
+      replacementMesh.position.set(instancePos.x, instancePos.y + planeIndexRef.current, instancePos.z);
       replacementMesh.updateMatrixWorld(true);
       worldGroup.add(replacementMesh);
       replacedPointsRef.current.set(clickedPointId, {mesh: replacementMesh, plane: planeIndexRef.current});
@@ -455,7 +455,7 @@ export default function SceneDesigner() {
       const m = new THREE.Matrix4();
       const q = new THREE.Quaternion();
       const hideScale = new THREE.Vector3(0, 0, 0);
-      m.compose(basePos, q, hideScale);
+      m.compose(instancePos, q, hideScale);
       mesh.setMatrixAt(clickedPointId, m);
       mesh.instanceMatrix.needsUpdate = true;
       
@@ -463,12 +463,11 @@ export default function SceneDesigner() {
 
       // Draw line if this is the second point
       if (previousPointRef.current !== null && previousPointRef.current !== clickedPointId) {
-        // Get base positions and apply current plane Y
-        const aBase = basePositionsRef.current?.[previousPointRef.current];
-        const bBase = basePositionsRef.current?.[clickedPointId];
-        if (!aBase || !bBase) return;
-        const a = new THREE.Vector3(aBase.x, planeIndexRef.current, aBase.z);
-        const b = new THREE.Vector3(bBase.x, planeIndexRef.current, bBase.z);
+        // Get positions from instance matrices and apply current plane Y
+        const aPosLocal = getPos(previousPointRef.current);
+        const bPosLocal = getPos(clickedPointId);
+        const a = new THREE.Vector3(aPosLocal.x, aPosLocal.y + planeIndexRef.current, aPosLocal.z);
+        const b = new THREE.Vector3(bPosLocal.x, bPosLocal.y + planeIndexRef.current, bPosLocal.z);
         const lineGeom = new THREE.BufferGeometry().setFromPoints([a, b]);
         const lineMat = new THREE.LineBasicMaterial({ color: clickedColor });
         const line = new THREE.Line(lineGeom, lineMat);
@@ -696,36 +695,30 @@ export default function SceneDesigner() {
       (replacementData.mesh.material as THREE.Material).dispose();
     });
     replacedPointsRef.current.clear();
+    // Clear any existing lines since instance IDs will change
+    createdLinesRef.current.forEach((ld) => {
+      worldGroup.remove(ld.line);
+      ld.line.geometry.dispose();
+      (ld.line.material as THREE.Material).dispose();
+    });
+    createdLinesRef.current = [];
+    setLinesCount(0);
+    // Reset point selection
+    previousPointRef.current = null;
+    currentRedPointRef.current = null;
     worldGroup.add(mesh);
   }, [gridDensity, defaultColor]);
 
-  // Handle scale changes and grid density calculation
-  useEffect(() => {
-    const s = Math.max(0.5, Math.min(1, scale));
-
-    // Calculate grid density based on scale (inverse relationship)
-    // When scale is smaller (0.5), we want more points (41)
-    // When scale is larger (1), we want fewer points (21)
-    const newDensity = Math.round(21 + (1 - s) * 20);
-    const clampedDensity = Math.max(21, Math.min(41, newDensity));
-
-    if (clampedDensity !== gridDensity) {
-      setGridDensity(clampedDensity);
-    }
-  }, [scale, gridDensity]);
-
-  // Handle scale and hide/show replaced points in instance matrices
+  // Handle hiding replaced points in instance matrices
   useEffect(() => {
     const mesh = pointsMeshRef.current;
     if (!mesh) return;
 
-    const s = Math.max(0.5, Math.min(1, scale));
-
-    // Apply scale (uniformly adjust sphere size)
-    const sphereScale = new THREE.Vector3(s, s, s);
     const totalInstances = mesh.count;
     const tmpM = new THREE.Matrix4();
     const tmpQ = new THREE.Quaternion();
+    const normalScale = new THREE.Vector3(1, 1, 1);
+    const hideScale = new THREE.Vector3(0, 0, 0);
 
     // Keep points at base XZ positions
     const positions = basePositionsRef.current;
@@ -734,16 +727,14 @@ export default function SceneDesigner() {
     for (let i = 0; i < totalInstances; i++) {
       const p = positions[i];
       const isReplaced = replacedPointsRef.current.has(i);
-      const scaleVec = isReplaced
-        ? new THREE.Vector3(0, 0, 0)
-        : sphereScale;
+      const scaleVec = isReplaced ? hideScale : normalScale;
       tmpM.compose(p, tmpQ, scaleVec);
       mesh.setMatrixAt(i, tmpM);
     }
 
     mesh.instanceMatrix.needsUpdate = true;
     mesh.updateMatrixWorld(true);
-  }, [scale, replacementChangeTrigger]);
+  }, [replacementChangeTrigger, gridDensity]);
 
   // Handle vertical plane positioning
   useEffect(() => {
@@ -993,18 +984,6 @@ export default function SceneDesigner() {
             <div style={{ fontSize: 16, fontWeight: 'bold', opacity: 0.9 }}>Scene Controls</div>
             <button onClick={() => setShowScenePanel(false)} aria-label="Collapse scene controls" style={{ width: 28, height: 28, padding: 0 }}>–</button>
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ width: 60 }}>Scale</span>
-            <input
-              type="range"
-              min={0.5}
-              max={1}
-              step={0.1}
-              value={scale}
-              onChange={(e) => setScale(parseFloat(e.target.value))}
-            />
-            <span style={{ width: 36, textAlign: "right" }}>{scale.toFixed(1)}x</span>
-          </label>
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 90 }}>Route type</span>
             <select value={routeType} onChange={(e) => setRouteType(e.target.value as RouteType)}>
