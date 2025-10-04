@@ -30,10 +30,40 @@ type SavedPoint = {
   position: { x: number; y: number; z: number };
 };
 
+  //Define a type for handling the line data
+  //This could be worked into line analysis later on and potentially used to store all of the line segemnts as the entire route for analysis
+  type LineData = {
+    line: THREE.Line;
+    startPointId: number;
+    endPointId: number;
+    isCurved: boolean;
+    radius: number; // curve radius (offset magnitude)
+    t: number; // control point position along the line [0..1]
+    timeAtLocation: number; // time spent at this location (seconds)
+    taskType: "push" | "pull" | "reach" | "translate" | "rotate" | "none"; // type of task performed
+    taskIntensity: number; // intensity of task (0-10 scale)
+  };
+
 // Hide the non-selected plane instances
 const HIDDEN_SCALE = 0.001; 
 const MIN_PLANE = -5;
 const MAX_PLANE = 5;
+
+// Build a curved geometry using a quadratic Bezier with a user-controlled control point.
+function createCurvedLineGeometryWithParams(start: THREE.Vector3, end: THREE.Vector3, radius: number, t: number) {
+  const direction = new THREE.Vector3().subVectors(end, start);
+  const pointOnLine = new THREE.Vector3().copy(start).addScaledVector(direction, Math.max(0, Math.min(1, t)));
+  const up = new THREE.Vector3(0, 1, 0);
+  let normal = new THREE.Vector3().crossVectors(direction, up);
+  if (normal.lengthSq() < 1e-6) {
+    normal = new THREE.Vector3().crossVectors(direction, new THREE.Vector3(1, 0, 0));
+  }
+  normal.normalize().multiplyScalar(radius);
+  const control = new THREE.Vector3().copy(pointOnLine).add(normal);
+  const curve = new THREE.QuadraticBezierCurve3(start, control, end);
+  const points = curve.getPoints(64);
+  return new THREE.BufferGeometry().setFromPoints(points);
+}
 
 export default function SceneDesigner() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -77,6 +107,15 @@ export default function SceneDesigner() {
   //tracks when points are replaced/restored to trigger re-renders
   const [replacementChangeTrigger, setReplacementChangeTrigger] = useState<number>(0);
 
+  //selected line index for editing
+  const [selectedLineIndex, setSelectedLineIndex] = useState<number | null>(null);
+
+  //trigger to force re-render when line parameters change
+  const [lineParamsTrigger, setLineParamsTrigger] = useState<number>(0);
+
+  //path quality score
+  const [pathQualityScore, setPathQualityScore] = useState<number>(100);
+
   //is the model plane open
   const [showModelPanel, setShowModelPanel] = useState<boolean>(false);
 
@@ -112,7 +151,7 @@ export default function SceneDesigner() {
   const pointsMeshRef = useRef<THREE.InstancedMesh | null>(null);
   const basePositionsRef = useRef<THREE.Vector3[] | null>(null);
   const gridYRef = useRef<Int16Array | null>(null);
-  const createdLinesRef = useRef<THREE.Line[]>([]);
+  const createdLinesRef = useRef<LineData[]>([]);
   const hoveredIdRef = useRef<number | null>(null);
   const selectedARef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -122,6 +161,7 @@ export default function SceneDesigner() {
   const replacedPointsRef = useRef<Map<number, {mesh: THREE.Mesh, plane: number}>>(new Map());
   const currentRedPointRef = useRef<number | null>(null); // Track the currently red point
   const previousPointRef = useRef<number | null>(null); // Track the previous point for line drawing
+  const selectedLineIndexRef = useRef<number | null>(null); // Track selected line for editing
 
 
   //UseEffect for the scene
@@ -163,6 +203,7 @@ export default function SceneDesigner() {
     starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
     starGeometry.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
     
+    //This is the material that is used for the very very very aesthetic starfield background
     const starMaterial = new THREE.PointsMaterial({
       size: 0.5,
       vertexColors: true,
@@ -171,6 +212,7 @@ export default function SceneDesigner() {
       sizeAttenuation: true
     });
     
+    //Add the stars to the scene
     const stars = new THREE.Points(starGeometry, starMaterial);
     scene.add(stars);
 
@@ -212,6 +254,8 @@ export default function SceneDesigner() {
     worldGroup.add(gridHelper);
 
     // Grid points (instanced spheres) - will be regenerated when density changes
+    //This was changed from a 3D grid to a 2D grid to simplify the code. Originally the grid was fully rendered into the scene in 3D and then sliced vertically.
+    //Now, a single plane of points is rendered into the scene and moved vertically to create the illusion of a 3D grid.
     function createGridPoints(density: number) {
       // Remove old mesh if it exists (but preserve other objects like imported models)
       if (pointsMeshRef.current) {
@@ -268,12 +312,29 @@ export default function SceneDesigner() {
     const mesh = createGridPoints(gridDensity);
 
     const raycaster = new THREE.Raycaster();
+    // @ts-ignore improve line raycast threshold
+    raycaster.params.Line = { ...raycaster.params.Line, threshold: 0.1 };
     const ndc = new THREE.Vector2();
     let hovered: number | null = null;
 
     function setColor(id: number, color: THREE.Color) {
       mesh.setColorAt(id, color);
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    }
+
+    function createCurvedLineGeometryWithParams(start: THREE.Vector3, end: THREE.Vector3, radius: number, t: number) {
+      const direction = new THREE.Vector3().subVectors(end, start);
+      const pointOnLine = new THREE.Vector3().copy(start).addScaledVector(direction, Math.max(0, Math.min(1, t)));
+      const up = new THREE.Vector3(0, 1, 0);
+      let normal = new THREE.Vector3().crossVectors(direction, up);
+      if (normal.lengthSq() < 1e-6) {
+        normal = new THREE.Vector3().crossVectors(direction, new THREE.Vector3(1, 0, 0));
+      }
+      normal.normalize().multiplyScalar(radius);
+      const control = new THREE.Vector3().copy(pointOnLine).add(normal);
+      const curve = new THREE.QuadraticBezierCurve3(start, control, end);
+      const points = curve.getPoints(64);
+      return new THREE.BufferGeometry().setFromPoints(points);
     }
 
     function getPos(id: number) {
@@ -326,6 +387,19 @@ export default function SceneDesigner() {
       ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
       raycaster.setFromCamera(ndc, camera);
+
+      // First check for hits on existing lines and toggle selection
+      let clickedLineIndex: number | null = null;
+      for (let i = 0; i < createdLinesRef.current.length; i++) {
+        const hit = raycaster.intersectObject(createdLinesRef.current[i].line, false);
+        if (hit.length > 0) { clickedLineIndex = i; break; }
+      }
+      if (clickedLineIndex !== null) {
+        const newSelected = selectedLineIndexRef.current === clickedLineIndex ? null : clickedLineIndex;
+        selectedLineIndexRef.current = newSelected;
+        setSelectedLineIndex(newSelected);
+        return;
+      }
 
       // First check for hits on replacement points (red points)
       let clickedReplacementId: number | null = null;
@@ -389,13 +463,27 @@ export default function SceneDesigner() {
 
       // Draw line if this is the second point
       if (previousPointRef.current !== null && previousPointRef.current !== clickedPointId) {
-        const a = getPos(previousPointRef.current);
-        const b = getPos(clickedPointId);
+        // Get base positions and apply current plane Y
+        const aBase = basePositionsRef.current?.[previousPointRef.current];
+        const bBase = basePositionsRef.current?.[clickedPointId];
+        if (!aBase || !bBase) return;
+        const a = new THREE.Vector3(aBase.x, planeIndexRef.current, aBase.z);
+        const b = new THREE.Vector3(bBase.x, planeIndexRef.current, bBase.z);
         const lineGeom = new THREE.BufferGeometry().setFromPoints([a, b]);
         const lineMat = new THREE.LineBasicMaterial({ color: clickedColor });
         const line = new THREE.Line(lineGeom, lineMat);
         worldGroup.add(line);
-        createdLinesRef.current.push(line);
+        createdLinesRef.current.push({ 
+          line, 
+          startPointId: previousPointRef.current, 
+          endPointId: clickedPointId, 
+          isCurved: false, 
+          radius: 1, 
+          t: 0.5,
+          timeAtLocation: 0,
+          taskType: "none",
+          taskIntensity: 0
+        });
         setLinesCount(createdLinesRef.current.length);
       }
 
@@ -427,9 +515,9 @@ export default function SceneDesigner() {
       container.removeEventListener("pointermove", onMove);
       container.removeEventListener("pointerdown", onDown);
       window.removeEventListener("resize", onResize);
-      createdLinesRef.current.forEach((l) => {
-        l.geometry.dispose();
-        (l.material as THREE.Material).dispose();
+      createdLinesRef.current.forEach((ld) => {
+        ld.line.geometry.dispose();
+        (ld.line.material as THREE.Material).dispose();
       });
       // Clean up replacement points
       replacedPointsRef.current.forEach((replacementData) => {
@@ -457,6 +545,100 @@ export default function SceneDesigner() {
 
   useEffect(() => { planeIndexRef.current = planeIndex; }, [planeIndex]);
   useEffect(() => { routeTypeRef.current = routeType; }, [routeType]);
+  useEffect(() => { selectedLineIndexRef.current = selectedLineIndex; }, [selectedLineIndex]);
+
+  // Calculate path quality score based on NASA TLX and path metrics
+  useEffect(() => {
+    const lines = createdLinesRef.current;
+    if (lines.length === 0) {
+      setPathQualityScore(100);
+      return;
+    }
+
+    let totalScore = 100;
+    let totalLength = 0;
+    let sharpTurnPenalty = 0;
+    let complexityPenalty = 0;
+    let workloadScore = 0;
+
+    // Calculate metrics for each segment
+    lines.forEach((lineData, index) => {
+      const positions = basePositionsRef.current;
+      if (!positions) return;
+
+      const startBase = positions[lineData.startPointId];
+      const endBase = positions[lineData.endPointId];
+      if (!startBase || !endBase) return;
+
+      // Calculate segment length
+      const start = new THREE.Vector3(startBase.x, planeIndex, startBase.z);
+      const end = new THREE.Vector3(endBase.x, planeIndex, endBase.z);
+      const segmentLength = start.distanceTo(end);
+      totalLength += segmentLength;
+
+      // Penalty for curved paths (complexity)
+      if (lineData.isCurved) {
+        complexityPenalty += Math.abs(lineData.radius) * 2; // Higher radius = more complex
+      }
+
+      // Calculate sharp turns (angle between consecutive segments)
+      if (index > 0) {
+        const prevLine = lines[index - 1];
+        const prevStartBase = positions[prevLine.startPointId];
+        const prevEndBase = positions[prevLine.endPointId];
+        if (prevStartBase && prevEndBase) {
+          const prevStart = new THREE.Vector3(prevStartBase.x, planeIndex, prevStartBase.z);
+          const prevEnd = new THREE.Vector3(prevEndBase.x, planeIndex, prevEndBase.z);
+          
+          const dir1 = new THREE.Vector3().subVectors(prevEnd, prevStart).normalize();
+          const dir2 = new THREE.Vector3().subVectors(end, start).normalize();
+          const angle = Math.acos(Math.max(-1, Math.min(1, dir1.dot(dir2))));
+          const angleDegrees = (angle * 180) / Math.PI;
+
+          // Sharp turn penalty (angles > 90 degrees are problematic)
+          if (angleDegrees > 90) {
+            sharpTurnPenalty += (angleDegrees - 90) / 9; // Scale to 0-10
+          }
+        }
+      }
+
+      // NASA TLX-inspired workload calculation
+      // Mental Demand: Task complexity
+      const mentalDemand = lineData.taskType !== "none" ? 5 : 0;
+      
+      // Physical Demand: Based on task intensity
+      const physicalDemand = lineData.taskIntensity;
+      
+      // Temporal Demand: Based on time at location
+      const temporalDemand = Math.min(10, lineData.timeAtLocation / 60); // Normalize to 0-10
+      
+      // Effort: Combination of physical and mental
+      const effort = (physicalDemand + mentalDemand) / 2;
+      
+      // Frustration: Sharp turns and complex paths increase frustration
+      const frustration = Math.min(10, (lineData.isCurved ? 3 : 0) + (sharpTurnPenalty / lines.length));
+
+      // Average TLX score for this segment (scale 0-10)
+      const segmentWorkload = (mentalDemand + physicalDemand + temporalDemand + effort + frustration) / 5;
+      workloadScore += segmentWorkload;
+    });
+
+    // Calculate penalties
+    const lengthPenalty = Math.min(30, totalLength * 2); // Longer paths reduce score
+    const avgWorkload = workloadScore / lines.length;
+    const workloadPenalty = avgWorkload * 3; // Scale workload to penalty
+
+    // Calculate final score (0-100)
+    totalScore = Math.max(0, Math.min(100, 
+      totalScore 
+      - lengthPenalty 
+      - sharpTurnPenalty 
+      - complexityPenalty 
+      - workloadPenalty
+    ));
+
+    setPathQualityScore(Math.round(totalScore));
+  }, [linesCount, lineParamsTrigger, planeIndex]);
 
   // Regenerate grid when density changes
   useEffect(() => {
@@ -522,7 +704,7 @@ export default function SceneDesigner() {
     const s = Math.max(0.5, Math.min(1, scale));
 
     // Calculate grid density based on scale (inverse relationship)
-    // When scale is smaller (0.5), we want more points (31)
+    // When scale is smaller (0.5), we want more points (41)
     // When scale is larger (1), we want fewer points (21)
     const newDensity = Math.round(21 + (1 - s) * 20);
     const clampedDensity = Math.max(21, Math.min(41, newDensity));
@@ -664,10 +846,10 @@ export default function SceneDesigner() {
   function simpleEvaluate() {
     // Placeholder: flag segments longer than a threshold as "bad movement"
     const threshold = 5;
-    const bad = createdLinesRef.current.filter((line) => {
-      const arr = (line.geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array;
+    const bad = createdLinesRef.current.filter((ld) => {
+      const arr = (ld.line.geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array;
       const ax = arr[0], ay = arr[1], az = arr[2];
-      const bx = arr[3], by = arr[4], bz = arr[5];
+      const bx = arr[arr.length - 3], by = arr[arr.length - 2], bz = arr[arr.length - 1];
       const dx = ax - bx, dy = ay - by, dz = az - bz;
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       return d > threshold;
@@ -677,11 +859,11 @@ export default function SceneDesigner() {
 
   function defineUnitFromTwoPoints() {
     // Simplified UI: use last drawn segment as unit reference
-    const last = createdLinesRef.current[createdLinesRef.current.length - 1];
+    const last = createdLinesRef.current[createdLinesRef.current.length - 1]?.line;
     if (!last) return;
     const arr = (last.geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array;
     const ax = arr[0], ay = arr[1], az = arr[2];
-    const bx = arr[3], by = arr[4], bz = arr[5];
+    const bx = arr[arr.length - 3], by = arr[arr.length - 2], bz = arr[arr.length - 1];
     const d = Math.hypot(ax - bx, ay - by, az - bz);
     setUnitDistance(d);
   }
@@ -785,6 +967,8 @@ export default function SceneDesigner() {
     input.click();
   }
 
+
+  //Return the scene designer component
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
@@ -836,13 +1020,155 @@ export default function SceneDesigner() {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button onClick={() => {
               const g = worldGroupRef.current; if (!g) return;
-              createdLinesRef.current.forEach((l) => { g.remove(l); l.geometry.dispose(); (l.material as THREE.Material).dispose(); });
+              createdLinesRef.current.forEach((ld) => { g.remove(ld.line); ld.line.geometry.dispose(); (ld.line.material as THREE.Material).dispose(); });
               createdLinesRef.current = []; setLinesCount(0);
             }}>Clear Lines</button>
             <button onClick={defineUnitFromTwoPoints}>Define Unit (last segment)</button>
             <button onClick={simpleEvaluate}>Evaluate</button>
           </div>
           <div style={{ fontSize: 12, opacity: 0.85 }}>Lines: {linesCount} {unitDistance ? `• Unit: ${unitDistance.toFixed(2)}` : ""}</div>
+          {selectedLineIndex !== null && (
+            <div style={{ fontSize: 12, opacity: 0.9, background: "rgba(255,255,255,0.08)", padding: 8, borderRadius: 4 }}>
+              <div style={{ marginBottom: 6 }}>Edit Line #{selectedLineIndex + 1}</div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={createdLinesRef.current[selectedLineIndex]?.isCurved || false}
+                  onChange={(e) => {
+                    const ld = createdLinesRef.current[selectedLineIndex!];
+                    if (!ld) return;
+                    ld.isCurved = e.target.checked;
+                    // Rebuild geometry
+                    const positions = basePositionsRef.current;
+                    if (!positions) return;
+                    const sBase = positions[ld.startPointId];
+                    const eBase = positions[ld.endPointId];
+                    if (!sBase || !eBase) return;
+                    const start = new THREE.Vector3(sBase.x, planeIndex, sBase.z);
+                    const end = new THREE.Vector3(eBase.x, planeIndex, eBase.z);
+                    const newGeom = ld.isCurved
+                      ? createCurvedLineGeometryWithParams(start, end, ld.radius, ld.t)
+                      : new THREE.BufferGeometry().setFromPoints([start, end]);
+                    ld.line.geometry.dispose();
+                    ld.line.geometry = newGeom;
+                    setLineParamsTrigger(prev => prev + 1);
+                  }}
+                />
+                <span>Curved</span>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <span style={{ width: 80 }}>Radius</span>
+                <input
+                  type="range"
+                  min={-5}
+                  max={5}
+                  step={0.1}
+                  value={createdLinesRef.current[selectedLineIndex]?.radius ?? 1}
+                  onChange={(e) => {
+                    const ld = createdLinesRef.current[selectedLineIndex!];
+                    if (!ld) return;
+                    ld.radius = parseFloat(e.target.value);
+                    setLineParamsTrigger(prev => prev + 1);
+                    if (!ld.isCurved) return;
+                    const positions = basePositionsRef.current; if (!positions) return;
+                    const sBase = positions[ld.startPointId]; const eBase = positions[ld.endPointId]; if (!sBase || !eBase) return;
+                    const start = new THREE.Vector3(sBase.x, planeIndex, sBase.z);
+                    const end = new THREE.Vector3(eBase.x, planeIndex, eBase.z);
+                    const newGeom = createCurvedLineGeometryWithParams(start, end, ld.radius, ld.t);
+                    ld.line.geometry.dispose();
+                    ld.line.geometry = newGeom;
+                  }}
+                />
+                <span style={{ width: 36, textAlign: "right" }}>{(createdLinesRef.current[selectedLineIndex]?.radius ?? 1).toFixed(1)}</span>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 80 }}>Curve pos</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={createdLinesRef.current[selectedLineIndex]?.t ?? 0.5}
+                  onChange={(e) => {
+                    const ld = createdLinesRef.current[selectedLineIndex!];
+                    if (!ld) return;
+                    ld.t = parseFloat(e.target.value);
+                    setLineParamsTrigger(prev => prev + 1);
+                    if (!ld.isCurved) return;
+                    const positions = basePositionsRef.current; if (!positions) return;
+                    const sBase = positions[ld.startPointId]; const eBase = positions[ld.endPointId]; if (!sBase || !eBase) return;
+                    const start = new THREE.Vector3(sBase.x, planeIndex, sBase.z);
+                    const end = new THREE.Vector3(eBase.x, planeIndex, eBase.z);
+                    const newGeom = createCurvedLineGeometryWithParams(start, end, ld.radius, ld.t);
+                    ld.line.geometry.dispose();
+                    ld.line.geometry = newGeom;
+                  }}
+                />
+                <span style={{ width: 36, textAlign: "right" }}>{(createdLinesRef.current[selectedLineIndex]?.t ?? 0.5).toFixed(2)}</span>
+              </label>
+              
+              <div style={{ borderTop: "1px solid rgba(255,255,255,0.2)", marginTop: 8, paddingTop: 8 }}>
+                <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>Task Properties</div>
+                
+                <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <span style={{ width: 80 }}>Time (sec)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={3600}
+                    step={1}
+                    value={createdLinesRef.current[selectedLineIndex]?.timeAtLocation ?? 0}
+                    onChange={(e) => {
+                      const ld = createdLinesRef.current[selectedLineIndex!];
+                      if (!ld) return;
+                      ld.timeAtLocation = parseFloat(e.target.value) || 0;
+                      setLineParamsTrigger(prev => prev + 1);
+                    }}
+                    style={{ width: 80, padding: 4, background: "#222", color: "#fff", border: "1px solid #555" }}
+                  />
+                </label>
+
+                <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <span style={{ width: 80 }}>Task type</span>
+                  <select
+                    value={createdLinesRef.current[selectedLineIndex]?.taskType ?? "none"}
+                    onChange={(e) => {
+                      const ld = createdLinesRef.current[selectedLineIndex!];
+                      if (!ld) return;
+                      ld.taskType = e.target.value as LineData["taskType"];
+                      setLineParamsTrigger(prev => prev + 1);
+                    }}
+                    style={{ flex: 1, padding: 4, background: "#222", color: "#fff", border: "1px solid #555" }}
+                  >
+                    <option value="none">None</option>
+                    <option value="push">Push</option>
+                    <option value="pull">Pull</option>
+                    <option value="reach">Reach</option>
+                    <option value="translate">Translate</option>
+                    <option value="rotate">Rotate</option>
+                  </select>
+                </label>
+
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 80 }}>Intensity</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={10}
+                    step={0.5}
+                    value={createdLinesRef.current[selectedLineIndex]?.taskIntensity ?? 0}
+                    onChange={(e) => {
+                      const ld = createdLinesRef.current[selectedLineIndex!];
+                      if (!ld) return;
+                      ld.taskIntensity = parseFloat(e.target.value);
+                      setLineParamsTrigger(prev => prev + 1);
+                    }}
+                  />
+                  <span style={{ width: 36, textAlign: "right" }}>{(createdLinesRef.current[selectedLineIndex]?.taskIntensity ?? 0).toFixed(1)}</span>
+                </label>
+              </div>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button onClick={saveCurrentPlanePoints}>Save plane points</button>
             <button onClick={loadPoints}>Load plane points</button>
@@ -918,6 +1244,55 @@ export default function SceneDesigner() {
           Planes
         </button>
       )}
+
+      {/* Path Quality Score (top-right) */}
+      <div
+        style={{
+          position: "absolute",
+          top: 12,
+          right: showModelPanel && importedModel ? 320 : 12,
+          background: "#000",
+          border: "2px solid #fff",
+          color: "#fff",
+          padding: "12px 16px",
+          minWidth: 180,
+          transition: "right 0.3s ease"
+        }}
+      >
+        <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Path Quality Score</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ 
+            fontSize: 32, 
+            fontWeight: "bold",
+            color: pathQualityScore >= 80 ? "#4ade80" : pathQualityScore >= 60 ? "#fbbf24" : pathQualityScore >= 40 ? "#fb923c" : "#ef4444"
+          }}>
+            {pathQualityScore}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, opacity: 0.6 }}>
+              {pathQualityScore >= 80 ? "Excellent" : pathQualityScore >= 60 ? "Good" : pathQualityScore >= 40 ? "Fair" : "Poor"}
+            </div>
+            <div style={{ 
+              width: "100%", 
+              height: 6, 
+              background: "#333", 
+              borderRadius: 3, 
+              overflow: "hidden",
+              marginTop: 4
+            }}>
+              <div style={{ 
+                width: `${pathQualityScore}%`, 
+                height: "100%", 
+                background: pathQualityScore >= 80 ? "#4ade80" : pathQualityScore >= 60 ? "#fbbf24" : pathQualityScore >= 40 ? "#fb923c" : "#ef4444",
+                transition: "width 0.3s ease"
+              }} />
+            </div>
+          </div>
+        </div>
+        <div style={{ fontSize: 9, opacity: 0.5, marginTop: 6 }}>
+          Based on NASA TLX factors
+        </div>
+      </div>
 
       {/* Import Model Button (bottom-right) */}
       <button
