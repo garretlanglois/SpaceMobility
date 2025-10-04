@@ -138,7 +138,10 @@ export default function SceneDesigner() {
             const zv = start + iz * step;
             const p = new THREE.Vector3(xv, yv, zv);
             positions.push(p);
-            gridY[k] = Math.round(yv);
+            // Use index-based plane assignment instead of rounding coordinate
+            // Map iy index to MIN_PLANE..MAX_PLANE range
+            const planeValue = Math.round(MIN_PLANE + (iy * (MAX_PLANE - MIN_PLANE)) / (GRID - 1));
+            gridY[k] = planeValue;
             tmpM.compose(p, tmpQ, tmpS);
             mesh.setMatrixAt(k, tmpM);
             mesh.setColorAt(k, defaultColor);
@@ -321,7 +324,10 @@ export default function SceneDesigner() {
           const zv = start + iz * step;
           const p = new THREE.Vector3(xv, yv, zv);
           positions.push(p);
-          gridY[k] = Math.round(yv);
+          // Use index-based plane assignment instead of rounding coordinate
+          // Map iy index to MIN_PLANE..MAX_PLANE range
+          const planeValue = Math.round(MIN_PLANE + (iy * (MAX_PLANE - MIN_PLANE)) / (GRID - 1));
+          gridY[k] = planeValue;
           tmpM.compose(p, tmpQ, tmpS);
           mesh.setMatrixAt(k, tmpM);
           mesh.setColorAt(k, defaultColor);
