@@ -1,9 +1,6 @@
 # SpaceMobility
 
 ### Human-Centered Space Habitat Design
-
-**Team:** SpaceMobility
-
 ---
 
 ## Overview
