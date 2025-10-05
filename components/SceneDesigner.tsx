@@ -130,6 +130,11 @@ export default function SceneDesigner() {
   //path quality score info popup
   const [showScoreInfo, setShowScoreInfo] = useState<boolean>(false);
 
+  const presetModels = [
+    { name: "Gateway", path: "/models/gateway.glb" },
+    // Add more models by placing .glb or .gltf files in public/models/
+  ];
+
   //memoized colors
   const defaultColor = useMemo(
     () => new THREE.Color(0xffffff), // White default points
@@ -277,8 +282,12 @@ export default function SceneDesigner() {
       const tmpS = new THREE.Vector3(1, 1, 1);
       const positions: THREE.Vector3[] = []; // Base 2D positions (X, Y only)
 
+      //Calculate the start and span of the grid
+      //This is essentially just the bounds of the points in the scene
       const start = MIN_PLANE;
       const span = MAX_PLANE - MIN_PLANE;
+
+      //Step size is the distance between each point in the grid
       const step = GRID > 1 ? span / (GRID - 1) : 0;
 
       // Generate 2D grid (only X and Z)
@@ -556,9 +565,29 @@ export default function SceneDesigner() {
 
     let totalScore = 100;
     let totalLength = 0;
+    let totalTime = 0;
     let sharpTurnPenalty = 0;
     let complexityPenalty = 0;
     let workloadScore = 0;
+    let taskPenalty = 0;
+    let fatiguePenalty = 0;
+
+    // Task type difficulty multipliers
+    const taskDifficulty: Record<string, number> = {
+      "none": 0,
+      "reach": 2,
+      "push": 3,
+      "pull": 3,
+      "translate": 4,
+      "rotate": 5
+    };
+
+    // Route type efficiency factors
+    const routeEfficiency: Record<RouteType, number> = {
+      "handrail": 1.0,      // Most stable and efficient
+      "free_drift": 1.3,    // Requires more control
+      "tethered": 1.2       // Some restriction but aided
+    };
 
     // Calculate metrics for each segment
     lines.forEach((lineData, index) => {
@@ -569,11 +598,19 @@ export default function SceneDesigner() {
       const endBase = positions[lineData.endPointId];
       if (!startBase || !endBase) return;
 
-      // Calculate segment length
+      // Calculate segment length and travel time
       const start = new THREE.Vector3(startBase.x, planeIndex, startBase.z);
       const end = new THREE.Vector3(endBase.x, planeIndex, endBase.z);
       const segmentLength = start.distanceTo(end);
       totalLength += segmentLength;
+
+      // Apply route type efficiency to length penalty
+      const routeMultiplier = routeEfficiency[lineData.routeType] || 1.0;
+      totalLength += segmentLength * (routeMultiplier - 1); // Add extra penalty for less efficient routes
+
+      // Accumulate total time including task time
+      const segmentTime = lineData.timeAtLocation;
+      totalTime += segmentTime;
 
       // Penalty for curved paths (complexity)
       if (lineData.isCurved) {
@@ -601,31 +638,54 @@ export default function SceneDesigner() {
         }
       }
 
+      // Enhanced Task Analysis
+      const baseTaskDifficulty = taskDifficulty[lineData.taskType] || 0;
+      const taskComplexity = baseTaskDifficulty * (lineData.taskIntensity / 10); // 0-5 scale
+      
+      // Time spent on task creates fatigue (longer tasks are harder)
+      const timeFactor = Math.min(5, segmentTime / 120); // Every 2 minutes = 1 point, cap at 5
+      
+      // Combined task penalty: difficulty × intensity × time
+      if (lineData.taskType !== "none") {
+        taskPenalty += taskComplexity * (1 + timeFactor * 0.5); // Time amplifies task difficulty
+      }
+
       // NASA TLX-inspired workload calculation
-      // Mental Demand: Task complexity
-      const mentalDemand = lineData.taskType !== "none" ? 5 : 0;
+      // Mental Demand: Task complexity and route type
+      const mentalDemand = Math.min(10, baseTaskDifficulty + (routeMultiplier - 1) * 5);
       
       // Physical Demand: Based on task intensity
       const physicalDemand = lineData.taskIntensity;
       
-      // Temporal Demand: Based on time at location
-      const temporalDemand = Math.min(10, lineData.timeAtLocation / 60); // Normalize to 0-10
+      // Temporal Demand: Based on time at location (pressure increases with duration)
+      const temporalDemand = Math.min(10, (segmentTime / 180) * 10); // 3 minutes = max pressure
       
-      // Effort: Combination of physical and mental
-      const effort = (physicalDemand + mentalDemand) / 2;
+      // Effort: Combination of physical, mental, and route difficulty
+      const effort = Math.min(10, (physicalDemand + mentalDemand) / 2 + taskComplexity);
       
-      // Frustration: Sharp turns and complex paths increase frustration
-      const frustration = Math.min(10, (lineData.isCurved ? 3 : 0) + (sharpTurnPenalty / lines.length));
+      // Frustration: Sharp turns, complex paths, and difficult tasks
+      const frustration = Math.min(10, 
+        (lineData.isCurved ? 3 : 0) + 
+        (sharpTurnPenalty / lines.length) +
+        (taskComplexity * 0.5)
+      );
 
       // Average TLX score for this segment (scale 0-10)
       const segmentWorkload = (mentalDemand + physicalDemand + temporalDemand + effort + frustration) / 5;
       workloadScore += segmentWorkload;
     });
 
-    // Calculate penalties
-    const lengthPenalty = Math.min(30, totalLength * 2); // Longer paths reduce score
+    // Fatigue penalty: Total time on EVA (extended duration increases risk)
+    // Assume 30 min optimal, penalty increases after that
+    if (totalTime > 1800) { // 30 minutes
+      fatiguePenalty = Math.min(15, (totalTime - 1800) / 120); // 1 point per 2 extra minutes, cap at 15
+    }
+
+    // Calculate penalties with enhanced weighting
+    const lengthPenalty = Math.min(25, totalLength * 1.5); // Path length
     const avgWorkload = workloadScore / lines.length;
-    const workloadPenalty = avgWorkload * 3; // Scale workload to penalty
+    const workloadPenalty = avgWorkload * 2.5; // NASA TLX workload
+    const enhancedTaskPenalty = Math.min(20, taskPenalty); // Task difficulty cap
 
     // Calculate final score (0-100)
     totalScore = Math.max(0, Math.min(100, 
@@ -634,6 +694,8 @@ export default function SceneDesigner() {
       - sharpTurnPenalty 
       - complexityPenalty 
       - workloadPenalty
+      - enhancedTaskPenalty
+      - fatiguePenalty
     ));
 
     setPathQualityScore(Math.round(totalScore));
@@ -859,6 +921,81 @@ export default function SceneDesigner() {
     setUnitDistance(d);
   }
 
+  function loadModelFromURL(url: string, modelName: string) {
+    setIsLoadingModel(true);
+    const loader = new GLTFLoader();
+
+    loader.load(
+      url,
+      (gltf) => {
+        // Remove previous imported model if any
+        if (importedModelRef.current && worldGroupRef.current) {
+          worldGroupRef.current.remove(importedModelRef.current);
+          // Dispose previous model resources
+          importedModelRef.current.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+              child.geometry.dispose();
+              if (Array.isArray(child.material)) {
+                child.material.forEach(material => material.dispose());
+              } else {
+                child.material.dispose();
+              }
+            }
+          });
+        }
+
+        const model = gltf.scene;
+        
+        // Center the model at origin
+        const box = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        
+        // Center model
+        model.position.sub(center);
+        
+        // Scale model to larger size (max dimension = 10 units)
+        const maxDim = Math.max(size.x, size.y, size.z);
+        if (maxDim > 0) {
+          const targetSize = 10;
+          const scaleFactor = targetSize / maxDim;
+          model.scale.setScalar(scaleFactor);
+          // Store base scale for later adjustments
+          model.userData.baseScale = scaleFactor;
+        }
+
+        // Position at center of viewport (origin)
+        model.position.set(0, 0, 0);
+
+        // Add to scene
+        model.name = 'importedModel';
+        worldGroupRef.current?.add(model);
+        setImportedModel(model);
+        importedModelRef.current = model;
+        setIsLoadingModel(false);
+        setShowModelPanel(true);
+
+        // Reset model controls to default
+        setModelScale(1);
+        setModelRotation({x: 0, y: 0, z: 0});
+        setModelPosition({x: 0, y: 0, z: 0});
+        setClippingHeight(10);
+
+        console.log('Model loaded successfully:', modelName);
+      },
+      (progress) => {
+        if (progress.total > 0) {
+          console.log('Loading progress:', Math.round((progress.loaded / progress.total) * 100) + '%');
+        }
+      },
+      (error) => {
+        console.error('Error loading model:', error);
+        alert(`Error loading ${modelName}. Please ensure the file exists in the /models folder.`);
+        setIsLoadingModel(false);
+      }
+    );
+  }
+
   function importModel() {
     if (!fileInputRef.current) {
       const input = document.createElement('input');
@@ -876,83 +1013,11 @@ export default function SceneDesigner() {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (!file) return;
 
-      setIsLoadingModel(true);
-      const loader = new GLTFLoader();
       const fileURL = URL.createObjectURL(file);
-
-      loader.load(
-        fileURL,
-        (gltf) => {
-          // Remove previous imported model if any
-          if (importedModelRef.current && worldGroupRef.current) {
-            worldGroupRef.current.remove(importedModelRef.current);
-            // Dispose previous model resources
-            importedModelRef.current.traverse((child) => {
-              if (child instanceof THREE.Mesh) {
-                child.geometry.dispose();
-                if (Array.isArray(child.material)) {
-                  child.material.forEach(material => material.dispose());
-                } else {
-                  child.material.dispose();
-                }
-              }
-            });
-          }
-
-          const model = gltf.scene;
-          
-          // Center the model at origin
-          const box = new THREE.Box3().setFromObject(model);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
-          
-          // Center model
-          model.position.sub(center);
-          
-          // Scale model to larger size (max dimension = 10 units)
-          const maxDim = Math.max(size.x, size.y, size.z);
-          if (maxDim > 0) {
-            const targetSize = 10;
-            const scaleFactor = targetSize / maxDim;
-            model.scale.setScalar(scaleFactor);
-            // Store base scale for later adjustments
-            model.userData.baseScale = scaleFactor;
-          }
-
-          // Position at center of viewport (origin)
-          model.position.set(0, 0, 0);
-
-          // Add to scene
-          model.name = 'importedModel'; // Add name for identification
-          worldGroupRef.current?.add(model);
-          setImportedModel(model);
-          importedModelRef.current = model;
-          setIsLoadingModel(false);
-          setShowModelPanel(true);
-
-          // Reset model controls to default
-          setModelScale(1);
-          setModelRotation({x: 0, y: 0, z: 0});
-          setModelPosition({x: 0, y: 0, z: 0});
-          setClippingHeight(10); // Default to show full model
-
-          // Clean up blob URL
-          URL.revokeObjectURL(fileURL);
-
-          console.log('Model loaded successfully:', file.name);
-        },
-        (progress) => {
-          if (progress.total > 0) {
-            console.log('Loading progress:', Math.round((progress.loaded / progress.total) * 100) + '%');
-          }
-        },
-        (error) => {
-          console.error('Error loading model:', error);
-          alert('Error loading model. Please ensure it is a valid GLTF/GLB file.');
-          setIsLoadingModel(false);
-          URL.revokeObjectURL(fileURL);
-        }
-      );
+      loadModelFromURL(fileURL, file.name);
+      
+      // Clean up blob URL after loading starts
+      setTimeout(() => URL.revokeObjectURL(fileURL), 100);
     };
     
     input.click();
@@ -1572,43 +1637,137 @@ export default function SceneDesigner() {
         </div>
       )}
 
-      {/* Model and Station Builder Buttons (bottom-right) */}
+      {/* Import Model Button - Primary Action (bottom-center) */}
       <div style={{
         position: "absolute",
-        bottom: 12,
-        right: 12,
+        bottom: 24,
+        left: "50%",
+        transform: "translateX(-50%)",
         display: "flex",
-        gap: 8
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 12
       }}>
-        <button
-          onClick={createHollowCylinder}
-          aria-label="Create station module"
-          style={{
-            background: "#000",
-            border: "1px solid #fff",
-            color: "#fff",
-            padding: "6px 10px",
-            cursor: "pointer"
-          }}
-        >
-          Add Cylinder Module
-        </button>
         <button
           onClick={importModel}
           disabled={isLoadingModel}
           aria-label="Import model"
           style={{
             background: "#000",
-            border: "1px solid #fff",
+            border: "3px solid #fff",
             color: "#fff",
-            padding: "6px 10px",
+            padding: "18px 48px",
+            fontSize: 18,
+            fontWeight: "bold",
             cursor: isLoadingModel ? "not-allowed" : "pointer",
-            opacity: isLoadingModel ? 0.6 : 1
+            opacity: isLoadingModel ? 0.6 : 1,
+            boxShadow: isLoadingModel ? "none" : "0 0 20px rgba(255, 255, 255, 0.3)",
+            transition: "all 0.3s ease",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            letterSpacing: "0.5px"
+          }}
+          onMouseEnter={(e) => {
+            if (!isLoadingModel) {
+              e.currentTarget.style.background = "#fff";
+              e.currentTarget.style.color = "#000";
+              e.currentTarget.style.boxShadow = "0 0 30px rgba(255, 255, 255, 0.6)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "#000";
+            e.currentTarget.style.color = "#fff";
+            e.currentTarget.style.boxShadow = "0 0 20px rgba(255, 255, 255, 0.3)";
           }}
         >
-          {isLoadingModel ? 'Loading...' : 'Import Model'}
+          <span style={{ fontSize: 22 }}>📁</span>
+          {isLoadingModel ? 'LOADING MODEL...' : 'IMPORT 3D MODEL'}
         </button>
+        <div style={{
+          fontSize: 11,
+          color: "#888",
+          textAlign: "center",
+          opacity: 0.8
+        }}>
+          Upload GLTF or GLB here
+        </div>
+        
+        {/* Preset Models Selector */}
+        <div style={{
+          marginTop: 8,
+          display: "flex",
+          alignItems: "center",
+          gap: 10
+        }}>
+          <div style={{
+            fontSize: 12,
+            color: "#999",
+            opacity: 0.9
+          }}>
+            or load preset:
+          </div>
+          <select
+            disabled={isLoadingModel}
+            onChange={(e) => {
+              if (e.target.value) {
+                const model = presetModels.find(m => m.path === e.target.value);
+                if (model) {
+                  loadModelFromURL(model.path, model.name);
+                }
+                e.target.value = ''; // Reset selection
+              }
+            }}
+            style={{
+              background: "#000",
+              border: "1px solid #666",
+              color: "#fff",
+              padding: "6px 12px",
+              fontSize: 12,
+              cursor: isLoadingModel ? "not-allowed" : "pointer",
+              opacity: isLoadingModel ? 0.5 : 1
+            }}
+          >
+            <option value="">Choose Model...</option>
+            {presetModels.map((model) => (
+              <option key={model.path} value={model.path}>
+                {model.name}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
+
+      {/* Station Builder Button (bottom-right) */}
+      <button
+        onClick={createHollowCylinder}
+        aria-label="Create station module"
+        style={{
+          position: "absolute",
+          bottom: 12,
+          right: 12,
+          background: "#1a1a1a",
+          border: "1px solid #555",
+          color: "#aaa",
+          padding: "8px 14px",
+          fontSize: 13,
+          cursor: "pointer",
+          borderRadius: 4,
+          transition: "all 0.2s ease"
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = "#2a2a2a";
+          e.currentTarget.style.borderColor = "#777";
+          e.currentTarget.style.color = "#fff";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = "#1a1a1a";
+          e.currentTarget.style.borderColor = "#555";
+          e.currentTarget.style.color = "#aaa";
+        }}
+      >
+        + Add Module
+      </button>
 
       {/* Model Controls Panel (right side) */}
       {showModelPanel && importedModel && (
@@ -1657,8 +1816,16 @@ export default function SceneDesigner() {
               step={1}
               value={modelRotation.x}
               onChange={(e) => setModelRotation({...modelRotation, x: parseInt(e.target.value)})}
+              style={{ flex: 1 }}
             />
-            <span style={{ width: 36, textAlign: "right" }}>{modelRotation.x}°</span>
+            <input
+              type="number"
+              min={0}
+              max={360}
+              value={modelRotation.x}
+              onChange={(e) => setModelRotation({...modelRotation, x: Math.max(0, Math.min(360, parseInt(e.target.value) || 0))})}
+              style={{ width: 50, padding: 4, background: "#222", color: "#fff", border: "1px solid #555", textAlign: "right" }}
+            />
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 20 }}>Y</span>
@@ -1669,8 +1836,16 @@ export default function SceneDesigner() {
               step={1}
               value={modelRotation.y}
               onChange={(e) => setModelRotation({...modelRotation, y: parseInt(e.target.value)})}
+              style={{ flex: 1 }}
             />
-            <span style={{ width: 36, textAlign: "right" }}>{modelRotation.y}°</span>
+            <input
+              type="number"
+              min={0}
+              max={360}
+              value={modelRotation.y}
+              onChange={(e) => setModelRotation({...modelRotation, y: Math.max(0, Math.min(360, parseInt(e.target.value) || 0))})}
+              style={{ width: 50, padding: 4, background: "#222", color: "#fff", border: "1px solid #555", textAlign: "right" }}
+            />
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 20 }}>Z</span>
@@ -1681,8 +1856,16 @@ export default function SceneDesigner() {
               step={1}
               value={modelRotation.z}
               onChange={(e) => setModelRotation({...modelRotation, z: parseInt(e.target.value)})}
+              style={{ flex: 1 }}
             />
-            <span style={{ width: 36, textAlign: "right" }}>{modelRotation.z}°</span>
+            <input
+              type="number"
+              min={0}
+              max={360}
+              value={modelRotation.z}
+              onChange={(e) => setModelRotation({...modelRotation, z: Math.max(0, Math.min(360, parseInt(e.target.value) || 0))})}
+              style={{ width: 50, padding: 4, background: "#222", color: "#fff", border: "1px solid #555", textAlign: "right" }}
+            />
           </label>
 
           {/* Position Controls */}
@@ -1696,8 +1879,17 @@ export default function SceneDesigner() {
               step={0.5}
               value={modelPosition.x}
               onChange={(e) => setModelPosition({...modelPosition, x: parseFloat(e.target.value)})}
+              style={{ flex: 1 }}
             />
-            <span style={{ width: 36, textAlign: "right" }}>{modelPosition.x.toFixed(1)}</span>
+            <input
+              type="number"
+              min={-10}
+              max={10}
+              step={0.1}
+              value={modelPosition.x}
+              onChange={(e) => setModelPosition({...modelPosition, x: Math.max(-10, Math.min(10, parseFloat(e.target.value) || 0))})}
+              style={{ width: 50, padding: 4, background: "#222", color: "#fff", border: "1px solid #555", textAlign: "right" }}
+            />
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 20 }}>Y</span>
@@ -1708,8 +1900,17 @@ export default function SceneDesigner() {
               step={0.5}
               value={modelPosition.y}
               onChange={(e) => setModelPosition({...modelPosition, y: parseFloat(e.target.value)})}
+              style={{ flex: 1 }}
             />
-            <span style={{ width: 36, textAlign: "right" }}>{modelPosition.y.toFixed(1)}</span>
+            <input
+              type="number"
+              min={-10}
+              max={10}
+              step={0.1}
+              value={modelPosition.y}
+              onChange={(e) => setModelPosition({...modelPosition, y: Math.max(-10, Math.min(10, parseFloat(e.target.value) || 0))})}
+              style={{ width: 50, padding: 4, background: "#222", color: "#fff", border: "1px solid #555", textAlign: "right" }}
+            />
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 20 }}>Z</span>
@@ -1720,8 +1921,17 @@ export default function SceneDesigner() {
               step={0.5}
               value={modelPosition.z}
               onChange={(e) => setModelPosition({...modelPosition, z: parseFloat(e.target.value)})}
+              style={{ flex: 1 }}
             />
-            <span style={{ width: 36, textAlign: "right" }}>{modelPosition.z.toFixed(1)}</span>
+            <input
+              type="number"
+              min={-10}
+              max={10}
+              step={0.1}
+              value={modelPosition.z}
+              onChange={(e) => setModelPosition({...modelPosition, z: Math.max(-10, Math.min(10, parseFloat(e.target.value) || 0))})}
+              style={{ width: 50, padding: 4, background: "#222", color: "#fff", border: "1px solid #555", textAlign: "right" }}
+            />
           </label>
 
           {/* Clipping Plane Control */}
@@ -1735,8 +1945,17 @@ export default function SceneDesigner() {
               step={0.1}
               value={clippingHeight}
               onChange={(e) => setClippingHeight(parseFloat(e.target.value))}
+              style={{ flex: 1 }}
             />
-            <span style={{ width: 36, textAlign: "right" }}>{clippingHeight.toFixed(1)}</span>
+            <input
+              type="number"
+              min={-10}
+              max={10}
+              step={0.1}
+              value={clippingHeight}
+              onChange={(e) => setClippingHeight(Math.max(-10, Math.min(10, parseFloat(e.target.value) || 0)))}
+              style={{ width: 50, padding: 4, background: "#222", color: "#fff", border: "1px solid #555", textAlign: "right" }}
+            />
           </label>
           <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>
             Hides model above this height
