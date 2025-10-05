@@ -262,8 +262,9 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
     worldGroup.add(gridHelper);
 
     // Grid points (instanced spheres) - will be regenerated when density changes
-    //This was changed from a 3D grid to a 2D grid to simplify the code. Originally the grid was fully rendered into the scene in 3D and then sliced vertically.
-    //Now, a single plane of points is rendered into the scene and moved vertically to create the illusion of a 3D grid.
+    // This was changed from a 3D grid to a 2D grid to simplify the code. Originally the grid was fully rendered into the scene in 3D and then sliced vertically.
+    // Now, a single plane of points is rendered into the scene and moved vertically to create the illusion of a 3D grid.
+    
     function createGridPoints(density: number) {
       // Remove old mesh if it exists (but preserve other objects like imported models)
       if (pointsMeshRef.current) {
@@ -324,9 +325,7 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
     const mesh = createGridPoints(gridDensity);
 
     const raycaster = new THREE.Raycaster();
-    // @ts-ignore improve line raycast threshold
     raycaster.params.Line = { ...raycaster.params.Line, threshold: 0.1 };
-    // @ts-ignore improve point raycast threshold for smaller spheres
     raycaster.params.Points = { ...raycaster.params.Points, threshold: 0.2 };
     const ndc = new THREE.Vector2();
     let hovered: number | null = null;
@@ -394,6 +393,7 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
 
       hovered = currentHoveredId;
     }
+    
 
     function onDown(e: PointerEvent) {
       const rect = renderer.domElement.getBoundingClientRect();
@@ -568,9 +568,17 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
       return;
     }
 
+    //This is our starting value
     let totalScore = 100;
+
+    //Starting length of all of the line segments
     let totalLength = 0;
+
+    //Total time that has elapsed
+    //In future iterations it would be good to handle the time component independently
     let totalTime = 0;
+
+    //Different penalty to applied to the total score
     let sharpTurnPenalty = 0;
     let complexityPenalty = 0;
     let workloadScore = 0;
@@ -594,19 +602,22 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
       "tethered": 1.2       // Some restriction but aided
     };
 
-    // Calculate metrics for each segment
+    // We need to determine the values at each lines segment
     lines.forEach((lineData, index) => {
       const positions = basePositionsRef.current;
       if (!positions) return;
 
+      //Start point & end point
       const startBase = positions[lineData.startPointId];
       const endBase = positions[lineData.endPointId];
       if (!startBase || !endBase) return;
 
-      // Calculate segment length and travel time
+      // Determine the line segment length
       const start = new THREE.Vector3(startBase.x, planeIndex, startBase.z);
       const end = new THREE.Vector3(endBase.x, planeIndex, endBase.z);
       const segmentLength = start.distanceTo(end);
+
+      //Add it onto the total length of the line
       totalLength += segmentLength;
 
       // Apply route type efficiency to length penalty
@@ -655,7 +666,6 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
         taskPenalty += taskComplexity * (1 + timeFactor * 0.5); // Time amplifies task difficulty
       }
 
-      // NASA TLX-inspired workload calculation
       // Mental Demand: Task complexity and route type
       const mentalDemand = Math.min(10, baseTaskDifficulty + (routeMultiplier - 1) * 5);
       
@@ -831,7 +841,7 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
     });
   }, [planeIndex, replacementChangeTrigger]);
 
-  // Apply model transformations and clipping
+  // Apply the transformations to the model and the clipping funciton as well
   useEffect(() => {
     const model = importedModelRef.current;
     if (!model) return;
@@ -840,7 +850,7 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
     const baseScale = model.userData.baseScale || 1;
     model.scale.setScalar(baseScale * modelScale);
     
-    // Apply rotation (in radians)
+    // Apply rotations, apply proper unit radian degree conversions
     model.rotation.set(
       (modelRotation.x * Math.PI) / 180,
       (modelRotation.y * Math.PI) / 180,
@@ -995,6 +1005,7 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
     );
   }
 
+  //Simple function to import model and load the model into the viewport
   function importModel() {
     if (!fileInputRef.current) {
       const input = document.createElement('input');
@@ -1022,6 +1033,8 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
     input.click();
   }
 
+  // Claude Sonnet aided in the development of the hollow cylinder functions to place items in the right location
+  // As mentioned in the pitch, further versions of this function would allow for more different objects that could be placed
   function createHollowCylinder() {
     // Remove previous model if any
     if (importedModelRef.current && worldGroupRef.current) {
@@ -1152,7 +1165,7 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
     bottomBevel.position.y = -length / 2;
     moduleGroup.add(bottomBevel);
 
-    // Add solar panel mounts (small boxes on sides)
+    
     for (let i = 0; i < 2; i++) {
       const angle = i * Math.PI;
       const mountGeometry = new THREE.BoxGeometry(0.4, 0.6, 0.3);
@@ -1194,6 +1207,9 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
 
 
   //Return the scene designer component
+  // ChatGPT aided in the development of the different styles to increase efficiency
+  // In a further iteration of the app it would be useful to separate the application into different components rather than
+  // a monolithic 2000 line file and move the styles to a dedicated stylesheet.
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
@@ -1463,7 +1479,7 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
         </button>
       )}
 
-      {/* Path Quality Score (top-right) */}
+      {/* path quality score */}
       <div
         style={{
           position: "absolute",
