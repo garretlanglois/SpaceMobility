@@ -42,12 +42,13 @@ type SavedPoint = {
     timeAtLocation: number; // time spent at this location (seconds)
     taskType: "push" | "pull" | "reach" | "translate" | "rotate" | "none"; // type of task performed
     taskIntensity: number; // intensity of task (0-10 scale)
+    routeType: RouteType; // type of route for this segment
   };
 
 // Hide the non-selected plane instances
 const HIDDEN_SCALE = 0.001; 
-const MIN_PLANE = -5;
-const MAX_PLANE = 5;
+const MIN_PLANE = -10;
+const MAX_PLANE = 10;
 
 // Build a curved geometry using a quadratic Bezier with a user-controlled control point.
 function createCurvedLineGeometryWithParams(start: THREE.Vector3, end: THREE.Vector3, radius: number, t: number) {
@@ -71,15 +72,9 @@ export default function SceneDesigner() {
 
   //React state variable implemmentations
   //where the plane is
-  const [planeIndex, setPlaneIndex] = useState<number>(-5);
+  const [planeIndex, setPlaneIndex] = useState<number>(0);
   //number of lines
   const [linesCount, setLinesCount] = useState<number>(0);
-
-  //what type of route the astronaut will take
-  const [routeType, setRouteType] = useState<RouteType>("handrail");
-  
-  //is color blind mode on
-  const [colorBlindMode, setColorBlindMode] = useState<boolean>(false);
 
   //set the disstance between the two points to derive the unit
   const [unitDistance, setUnitDistance] = useState<number | null>(null);
@@ -129,18 +124,24 @@ export default function SceneDesigner() {
   //clipping plane height for slicing the model vertically
   const [clippingHeight, setClippingHeight] = useState<number>(10); // Default to show full model
 
+  //space station builder controls
+  const [showStationBuilder, setShowStationBuilder] = useState<boolean>(false);
+
+  //path quality score info popup
+  const [showScoreInfo, setShowScoreInfo] = useState<boolean>(false);
+
   //memoized colors
   const defaultColor = useMemo(
     () => new THREE.Color(0xffffff), // White default points
-    [colorBlindMode]
+    []
   );
   const hoverColor = useMemo(
     () => new THREE.Color(0xffffff), // White on hover (brighter effect can be added)
-    [colorBlindMode]
+    []
   );
   const clickedColor = useMemo(
     () => new THREE.Color(0xff3333), // Red when clicked/toggled
-    [colorBlindMode]
+    []
   );
 
   //WRITTEN BY CHATGPT: This is the code that handles the 3D scene and the interactions with the scene.
@@ -155,7 +156,6 @@ export default function SceneDesigner() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importedModelRef = useRef<THREE.Group | null>(null);
   const planeIndexRef = useRef<number>(planeIndex);
-  const routeTypeRef = useRef<RouteType>(routeType);
   const replacedPointsRef = useRef<Map<number, {mesh: THREE.Mesh, plane: number}>>(new Map());
   const currentRedPointRef = useRef<number | null>(null); // Track the currently red point
   const previousPointRef = useRef<number | null>(null); // Track the previous point for line drawing
@@ -247,8 +247,8 @@ export default function SceneDesigner() {
     worldGroupRef.current = worldGroup;
     scene.add(worldGroup);
 
-    const gridHelper = new THREE.GridHelper(50, 50, 0x666666, 0x444444);
-    gridHelper.position.y = -6;
+    const gridHelper = new THREE.GridHelper(100, 100, 0x666666, 0x444444);
+    gridHelper.position.y = -11;
     worldGroup.add(gridHelper);
 
     // Grid points (instanced spheres) - will be regenerated when density changes
@@ -481,7 +481,8 @@ export default function SceneDesigner() {
           t: 0.5,
           timeAtLocation: 0,
           taskType: "none",
-          taskIntensity: 0
+          taskIntensity: 0,
+          routeType: "handrail"
         });
         setLinesCount(createdLinesRef.current.length);
       }
@@ -543,7 +544,6 @@ export default function SceneDesigner() {
   }, [defaultColor, hoverColor, clickedColor]);
 
   useEffect(() => { planeIndexRef.current = planeIndex; }, [planeIndex]);
-  useEffect(() => { routeTypeRef.current = routeType; }, [routeType]);
   useEffect(() => { selectedLineIndexRef.current = selectedLineIndex; }, [selectedLineIndex]);
 
   // Calculate path quality score based on NASA TLX and path metrics
@@ -958,6 +958,176 @@ export default function SceneDesigner() {
     input.click();
   }
 
+  function createHollowCylinder() {
+    // Remove previous model if any
+    if (importedModelRef.current && worldGroupRef.current) {
+      worldGroupRef.current.remove(importedModelRef.current);
+      // Dispose previous model resources
+      importedModelRef.current.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose();
+          if (Array.isArray(child.material)) {
+            child.material.forEach(material => material.dispose());
+          } else {
+            child.material.dispose();
+          }
+        }
+      });
+    }
+
+    // Create space station module
+    const outerRadius = 2;
+    const innerRadius = 1.85;
+    const length = 10;
+    const radialSegments = 32;
+
+    const moduleGroup = new THREE.Group();
+    moduleGroup.name = 'spaceStationModule';
+
+    // Main hull - white/cream color like ISS (tube geometry for hollow shell)
+    const hullGeometry = new THREE.CylinderGeometry(outerRadius, outerRadius, length, radialSegments, 1, true);
+    const hullMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0xf0f0e8, 
+      metalness: 0.3,
+      roughness: 0.7,
+      side: THREE.DoubleSide
+    });
+    const hull = new THREE.Mesh(hullGeometry, hullMaterial);
+    moduleGroup.add(hull);
+
+    // Add structural rings along the module (hollow tubes)
+    const numRings = 5;
+    const ringThickness = 0.15;
+    const ringHeight = 0.3;
+    for (let i = 0; i < numRings; i++) {
+      const ringGeometry = new THREE.CylinderGeometry(
+        outerRadius + ringThickness, 
+        outerRadius + ringThickness, 
+        ringHeight, 
+        radialSegments,
+        1,
+        true // Open ended - hollow tube
+      );
+      const ringMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x4a4a4a,
+        metalness: 0.8,
+        roughness: 0.3,
+        side: THREE.DoubleSide
+      });
+      const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+      const spacing = length / (numRings + 1);
+      ring.position.y = -length / 2 + spacing * (i + 1);
+      moduleGroup.add(ring);
+    }
+
+    // Add windows/portholes
+    const numWindows = 8;
+    const windowRadius = 0.25;
+    for (let i = 0; i < numWindows; i++) {
+      const angle = (i / numWindows) * Math.PI * 2;
+      const windowGeometry = new THREE.CircleGeometry(windowRadius, 16);
+      const windowMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x1a3a5a,
+        metalness: 0.9,
+        roughness: 0.1,
+        emissive: 0x0a1a2a,
+        emissiveIntensity: 0.3
+      });
+      const window = new THREE.Mesh(windowGeometry, windowMaterial);
+      
+      // Position windows around the cylinder
+      window.position.x = Math.cos(angle) * (outerRadius + 0.01);
+      window.position.z = Math.sin(angle) * (outerRadius + 0.01);
+      window.position.y = 0;
+      
+      // Rotate to face outward
+      window.lookAt(
+        window.position.x * 2,
+        window.position.y,
+        window.position.z * 2
+      );
+      
+      moduleGroup.add(window);
+    }
+
+    // Add solid flat end caps
+    const capGeometry = new THREE.CircleGeometry(outerRadius, radialSegments);
+    const capMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0xdddddd,
+      metalness: 0.5,
+      roughness: 0.5,
+      side: THREE.DoubleSide
+    });
+
+    const topCap = new THREE.Mesh(capGeometry, capMaterial);
+    topCap.rotation.x = Math.PI / 2;
+    topCap.position.y = length / 2;
+    moduleGroup.add(topCap);
+
+    const bottomCap = new THREE.Mesh(capGeometry, capMaterial.clone());
+    bottomCap.rotation.x = Math.PI / 2;
+    bottomCap.position.y = -length / 2;
+    moduleGroup.add(bottomCap);
+
+    // Add beveled edges (torus) where caps meet the hull
+    const bevelRadius = 0.15;
+    const bevelGeometry = new THREE.TorusGeometry(outerRadius - bevelRadius, bevelRadius, 16, radialSegments);
+    const bevelMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0xdddddd,
+      metalness: 0.5,
+      roughness: 0.5
+    });
+
+    const topBevel = new THREE.Mesh(bevelGeometry, bevelMaterial);
+    topBevel.rotation.x = Math.PI / 2;
+    topBevel.position.y = length / 2;
+    moduleGroup.add(topBevel);
+
+    const bottomBevel = new THREE.Mesh(bevelGeometry, bevelMaterial.clone());
+    bottomBevel.rotation.x = Math.PI / 2;
+    bottomBevel.position.y = -length / 2;
+    moduleGroup.add(bottomBevel);
+
+    // Add solar panel mounts (small boxes on sides)
+    for (let i = 0; i < 2; i++) {
+      const angle = i * Math.PI;
+      const mountGeometry = new THREE.BoxGeometry(0.4, 0.6, 0.3);
+      const mountMaterial = new THREE.MeshStandardMaterial({ 
+        color: 0x555555,
+        metalness: 0.6,
+        roughness: 0.5
+      });
+      const mount = new THREE.Mesh(mountGeometry, mountMaterial);
+      mount.position.x = Math.cos(angle) * (outerRadius + 0.3);
+      mount.position.z = Math.sin(angle) * (outerRadius + 0.3);
+      mount.position.y = length / 4;
+      moduleGroup.add(mount);
+    }
+
+    // Rotate 90 degrees on X axis
+    moduleGroup.rotation.x = Math.PI / 2;
+    
+    // Position at center
+    moduleGroup.position.set(0, 0, 0);
+    
+    // Store base scale
+    moduleGroup.userData.baseScale = 1;
+
+    // Add to scene
+    worldGroupRef.current?.add(moduleGroup);
+    setImportedModel(moduleGroup);
+    importedModelRef.current = moduleGroup;
+    setShowModelPanel(true);
+
+    // Reset model controls to match initial rotation
+    setModelScale(1);
+    setModelRotation({x: 90, y: 0, z: 0});
+    setModelPosition({x: 0, y: 0, z: 0});
+    setClippingHeight(10);
+
+    console.log('Space station module created at center');
+  }
+
 
   //Return the scene designer component
   return (
@@ -984,18 +1154,6 @@ export default function SceneDesigner() {
             <div style={{ fontSize: 16, fontWeight: 'bold', opacity: 0.9 }}>Scene Controls</div>
             <button onClick={() => setShowScenePanel(false)} aria-label="Collapse scene controls" style={{ width: 28, height: 28, padding: 0 }}>–</button>
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ width: 90 }}>Route type</span>
-            <select value={routeType} onChange={(e) => setRouteType(e.target.value as RouteType)}>
-              <option value="handrail">Handrail</option>
-              <option value="free_drift">Free drift</option>
-              <option value="tethered">Tethered</option>
-            </select>
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input type="checkbox" checked={colorBlindMode} onChange={(e) => setColorBlindMode(e.target.checked)} />
-            <span>Color blind mode</span>
-          </label>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button onClick={() => {
               const g = worldGroupRef.current; if (!g) return;
@@ -1087,8 +1245,26 @@ export default function SceneDesigner() {
               </label>
               
               <div style={{ borderTop: "1px solid rgba(255,255,255,0.2)", marginTop: 8, paddingTop: 8 }}>
-                <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>Task Properties</div>
+                <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6 }}>Route & Task Properties</div>
                 
+                <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <span style={{ width: 80 }}>Route type</span>
+                  <select
+                    value={createdLinesRef.current[selectedLineIndex]?.routeType ?? "handrail"}
+                    onChange={(e) => {
+                      const ld = createdLinesRef.current[selectedLineIndex!];
+                      if (!ld) return;
+                      ld.routeType = e.target.value as RouteType;
+                      setLineParamsTrigger(prev => prev + 1);
+                    }}
+                    style={{ flex: 1, padding: 4, background: "#222", color: "#fff", border: "1px solid #555" }}
+                  >
+                    <option value="handrail">Handrail</option>
+                    <option value="free_drift">Free drift</option>
+                    <option value="tethered">Tethered</option>
+                  </select>
+                </label>
+
                 <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                   <span style={{ width: 80 }}>Time (sec)</span>
                   <input
@@ -1238,7 +1414,29 @@ export default function SceneDesigner() {
           transition: "right 0.3s ease"
         }}
       >
-        <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>Path Quality Score</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+          <div style={{ fontSize: 11, opacity: 0.7 }}>Path Quality Score</div>
+          <button
+            onClick={() => setShowScoreInfo(true)}
+            aria-label="Path quality score information"
+            style={{
+              width: 20,
+              height: 20,
+              borderRadius: "50%",
+              background: "#333",
+              border: "1px solid #666",
+              color: "#fff",
+              fontSize: 12,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0
+            }}
+          >
+            i
+          </button>
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ 
             fontSize: 32, 
@@ -1273,25 +1471,144 @@ export default function SceneDesigner() {
         </div>
       </div>
 
-      {/* Import Model Button (bottom-right) */}
-      <button
-        onClick={importModel}
-        disabled={isLoadingModel}
-        aria-label="Import model"
-        style={{
-          position: "absolute",
-          bottom: 12,
-          right: 12,
-          background: "#000",
-          border: "1px solid #fff",
-          color: "#fff",
-          padding: "6px 10px",
-          cursor: isLoadingModel ? "not-allowed" : "pointer",
-          opacity: isLoadingModel ? 0.6 : 1
-        }}
-      >
-        {isLoadingModel ? 'Loading...' : 'Import Model'}
-      </button>
+      {/* Path Quality Score Info Popup */}
+      {showScoreInfo && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "100%",
+            height: "100%",
+            background: "rgba(0, 0, 0, 0.8)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000
+          }}
+          onClick={() => setShowScoreInfo(false)}
+        >
+          <div
+            style={{
+              background: "#000",
+              border: "2px solid #fff",
+              color: "#fff",
+              padding: "24px",
+              maxWidth: 600,
+              maxHeight: "80vh",
+              overflowY: "auto",
+              position: "relative"
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h2 style={{ margin: 0, fontSize: 20 }}>Path Quality Score Algorithm</h2>
+              <button
+                onClick={() => setShowScoreInfo(false)}
+                aria-label="Close"
+                style={{
+                  width: 32,
+                  height: 32,
+                  background: "#333",
+                  border: "1px solid #666",
+                  color: "#fff",
+                  fontSize: 18,
+                  cursor: "pointer",
+                  padding: 0
+                }}
+              >
+                ×
+              </button>
+            </div>
+            
+            <div style={{ fontSize: 14, lineHeight: 1.6 }}>
+              <p style={{ marginTop: 0 }}>
+                The Path Quality Score evaluates astronaut movement paths based on NASA Task Load Index (TLX) 
+                principles and biomechanical factors. The score starts at 100 and penalties are applied based on:
+              </p>
+
+              <h3 style={{ fontSize: 16, marginTop: 20, marginBottom: 8 }}>1. Path Length Penalty</h3>
+              <p style={{ margin: "0 0 12px 0" }}>
+                <strong>Formula:</strong> min(30, totalLength × 2)<br />
+                Longer paths require more energy and time. Each unit of distance adds 2 points of penalty, capped at 30 points.
+              </p>
+
+              <h3 style={{ fontSize: 16, marginTop: 20, marginBottom: 8 }}>2. Sharp Turn Penalty</h3>
+              <p style={{ margin: "0 0 12px 0" }}>
+                <strong>Formula:</strong> (angle - 90°) / 9 for angles &gt; 90°<br />
+                Sharp direction changes are difficult in microgravity. Turns over 90 degrees add difficulty, with 180-degree turns adding 10 points.
+              </p>
+
+              <h3 style={{ fontSize: 16, marginTop: 20, marginBottom: 8 }}>3. Complexity Penalty</h3>
+              <p style={{ margin: "0 0 12px 0" }}>
+                <strong>Formula:</strong> |radius| × 2<br />
+                Curved paths require more spatial awareness and control. Larger curve radii increase complexity.
+              </p>
+
+              <h3 style={{ fontSize: 16, marginTop: 20, marginBottom: 8 }}>4. NASA TLX Workload Score</h3>
+              <p style={{ margin: "0 0 8px 0" }}>Based on five factors (each 0-10 scale):</p>
+              <ul style={{ marginTop: 0, paddingLeft: 20 }}>
+                <li><strong>Mental Demand:</strong> Task complexity (5 if task assigned, 0 if none)</li>
+                <li><strong>Physical Demand:</strong> Task intensity value (0-10)</li>
+                <li><strong>Temporal Demand:</strong> Time pressure (time/60, capped at 10)</li>
+                <li><strong>Effort:</strong> Average of mental and physical demands</li>
+                <li><strong>Frustration:</strong> Curved paths (3) + turn difficulty</li>
+              </ul>
+              <p style={{ margin: "8px 0 12px 0" }}>
+                <strong>Formula:</strong> (sum of factors / 5) × 3<br />
+                The average workload score is scaled and applied as a penalty.
+              </p>
+
+              <h3 style={{ fontSize: 16, marginTop: 20, marginBottom: 8 }}>Final Score</h3>
+              <p style={{ margin: "0 0 12px 0" }}>
+                <strong>Score = 100 - length penalty - sharp turn penalty - complexity penalty - workload penalty</strong>
+              </p>
+              <p style={{ margin: "12px 0 0 0" }}>
+                The final score is clamped between 0 and 100, with higher scores indicating more efficient, 
+                safer paths for astronaut navigation.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Model and Station Builder Buttons (bottom-right) */}
+      <div style={{
+        position: "absolute",
+        bottom: 12,
+        right: 12,
+        display: "flex",
+        gap: 8
+      }}>
+        <button
+          onClick={createHollowCylinder}
+          aria-label="Create station module"
+          style={{
+            background: "#000",
+            border: "1px solid #fff",
+            color: "#fff",
+            padding: "6px 10px",
+            cursor: "pointer"
+          }}
+        >
+          Add Cylinder Module
+        </button>
+        <button
+          onClick={importModel}
+          disabled={isLoadingModel}
+          aria-label="Import model"
+          style={{
+            background: "#000",
+            border: "1px solid #fff",
+            color: "#fff",
+            padding: "6px 10px",
+            cursor: isLoadingModel ? "not-allowed" : "pointer",
+            opacity: isLoadingModel ? 0.6 : 1
+          }}
+        >
+          {isLoadingModel ? 'Loading...' : 'Import Model'}
+        </button>
+      </div>
 
       {/* Model Controls Panel (right side) */}
       {showModelPanel && importedModel && (
