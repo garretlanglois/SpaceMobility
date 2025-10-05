@@ -67,7 +67,11 @@ function createCurvedLineGeometryWithParams(start: THREE.Vector3, end: THREE.Vec
   return new THREE.BufferGeometry().setFromPoints(points);
 }
 
-export default function SceneDesigner() {
+interface SceneDesignerProps {
+  onShowTutorial?: () => void;
+}
+
+export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
 
@@ -87,7 +91,7 @@ export default function SceneDesigner() {
   const [showScenePanel, setShowScenePanel] = useState<boolean>(true);
 
   //show the plane panel
-  const [showPlanePanel, setShowPlanePanel] = useState<boolean>(true);
+  const [showPlanePanel, setShowPlanePanel] = useState<boolean>(false);
 
   //is the model loading
   const [isLoadingModel, setIsLoadingModel] = useState<boolean>(false);
@@ -897,20 +901,6 @@ export default function SceneDesigner() {
     } catch {}
   }
 
-  function simpleEvaluate() {
-    // Placeholder: flag segments longer than a threshold as "bad movement"
-    const threshold = 5;
-    const bad = createdLinesRef.current.filter((ld) => {
-      const arr = (ld.line.geometry.getAttribute("position") as THREE.BufferAttribute).array as Float32Array;
-      const ax = arr[0], ay = arr[1], az = arr[2];
-      const bx = arr[arr.length - 3], by = arr[arr.length - 2], bz = arr[arr.length - 1];
-      const dx = ax - bx, dy = ay - by, dz = az - bz;
-      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      return d > threshold;
-    });
-    alert(`Evaluation complete: ${bad.length} potential violations (distance > ${threshold}).`);
-  }
-
   function defineUnitFromTwoPoints() {
     // Simplified UI: use last drawn segment as unit reference
     const last = createdLinesRef.current[createdLinesRef.current.length - 1]?.line;
@@ -1227,7 +1217,6 @@ export default function SceneDesigner() {
               createdLinesRef.current = []; setLinesCount(0);
             }}>Clear Lines</button>
             <button onClick={defineUnitFromTwoPoints}>Define Unit (last segment)</button>
-            <button onClick={simpleEvaluate}>Evaluate</button>
           </div>
           <div style={{ fontSize: 12, opacity: 0.85 }}>Lines: {linesCount} {unitDistance ? `• Unit: ${unitDistance.toFixed(2)}` : ""}</div>
           {selectedLineIndex !== null && (
@@ -1989,6 +1978,43 @@ export default function SceneDesigner() {
 
       {/* ISS Position Display (bottom-right) */}
       <ISSPositionDisplay />
+
+      {/* Help Button (top-right corner) */}
+      <button
+        onClick={onShowTutorial}
+        aria-label="Show tutorial"
+        title="Press 'H' to show tutorial"
+        style={{
+          position: "absolute",
+          top: 12,
+          right: showModelPanel && importedModel ? (320 + 200 + 24) : (200 + 24),
+          width: 36,
+          height: 36,
+          borderRadius: "50%",
+          background: "linear-gradient(135deg, #4ade80 0%, #22c55e 100%)",
+          border: "2px solid #fff",
+          color: "#000",
+          fontSize: 20,
+          fontWeight: "bold",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 4px 12px rgba(74, 222, 128, 0.4)",
+          transition: "all 0.2s ease",
+          zIndex: 10
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.transform = "scale(1.1)";
+          e.currentTarget.style.boxShadow = "0 6px 16px rgba(74, 222, 128, 0.6)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.transform = "scale(1)";
+          e.currentTarget.style.boxShadow = "0 4px 12px rgba(74, 222, 128, 0.4)";
+        }}
+      >
+        ?
+      </button>
     </div>
   );
 }
