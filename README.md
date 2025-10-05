@@ -36,8 +36,6 @@ It helps reduce astronaut fatigue, improve safety, and support healthier long-du
 ## Run Locally
 
 ```bash
-git clone https://github.com/[your-org]/spacemobility.git
-cd spacemobility
 npm install
 npm run dev
 ```
