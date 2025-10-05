@@ -22,6 +22,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import ISSPositionDisplay from "./ISSPositionDisplay";
 
 type RouteType = "handrail" | "free_drift" | "tethered";
 
@@ -1985,6 +1986,9 @@ export default function SceneDesigner() {
           Model
         </button>
       )}
+
+      {/* ISS Position Display (bottom-right) */}
+      <ISSPositionDisplay />
     </div>
   );
 }
