@@ -966,11 +966,19 @@ export default function SceneDesigner({ onShowTutorial }: SceneDesignerProps = {
         setIsLoadingModel(false);
         setShowModelPanel(true);
 
-        // Reset model controls to default
-        setModelScale(1);
-        setModelRotation({x: 0, y: 0, z: 0});
-        setModelPosition({x: 0, y: 0, z: 0});
-        setClippingHeight(10);
+        // Check if this is the Gateway model and apply preset transformations
+        if (modelName.toLowerCase().includes('gateway')) {
+          setModelScale(3.0);
+          setModelRotation({x: 195, y: 63, z: 79});
+          setModelPosition({x: 0.5, y: 0.5, z: 1.5});
+          setClippingHeight(0.4);
+        } else {
+          // Reset model controls to default for other models
+          setModelScale(1);
+          setModelRotation({x: 0, y: 0, z: 0});
+          setModelPosition({x: 0, y: 0, z: 0});
+          setClippingHeight(10);
+        }
 
         console.log('Model loaded successfully:', modelName);
       },
